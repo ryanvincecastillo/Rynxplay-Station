@@ -1,0 +1,7 @@
+export { DashboardPage } from './DashboardPage'
+export { DevicesPage } from './DevicesPage'
+export { MembersPage } from './MembersPage'
+export { SessionsPage } from './SessionsPage'
+export { TransactionsPage } from './TransactionsPage'
+export { SettingsPage } from './SettingsPage'
+export { LoginPage } from './LoginPage'
