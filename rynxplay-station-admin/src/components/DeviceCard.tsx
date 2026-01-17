@@ -1,11 +1,11 @@
-import { Monitor, Smartphone, MoreVertical, Power, RefreshCw, MessageSquare, Lock, Info } from 'lucide-react'
+import { Monitor, Smartphone, MoreVertical, Power, RefreshCw, MessageSquare, Lock, Unlock, Info } from 'lucide-react'
 import { useState } from 'react'
 import type { Device } from '@/types'
 import { formatRelativeTime, getStatusBadge, formatBytes } from '@/lib/utils'
 
 interface DeviceCardProps {
   device: Device
-  onCommand: (command: 'shutdown' | 'restart' | 'lock' | 'message') => void
+  onCommand: (command: 'shutdown' | 'restart' | 'lock' | 'message' | 'admin_unlock') => void
   onViewDetails: () => void
 }
 
@@ -82,6 +82,13 @@ export function DeviceCard({ device, onCommand, onViewDetails }: DeviceCardProps
                 >
                   <Lock className="w-4 h-4" />
                   Lock Device
+                </button>
+                <button
+                  onClick={() => { onCommand('admin_unlock'); setShowMenu(false) }}
+                  className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-emerald-400 hover:bg-slate-700/50 transition-colors"
+                >
+                  <Unlock className="w-4 h-4" />
+                  Admin Unlock
                 </button>
                 <div className="border-t border-slate-700 my-1" />
                 <button

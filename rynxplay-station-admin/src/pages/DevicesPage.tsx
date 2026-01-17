@@ -33,12 +33,14 @@ export function DevicesPage() {
   const [showApproveModal, setShowApproveModal] = useState(false)
   const [showMessageModal, setShowMessageModal] = useState(false)
   const [showDetailsModal, setShowDetailsModal] = useState(false)
+  const [showAdminUnlockModal, setShowAdminUnlockModal] = useState(false)
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null)
   const [selectedBranch, setSelectedBranch] = useState('')
   const [selectedRate, setSelectedRate] = useState('')
   const [branchRates, setBranchRates] = useState<Rate[]>([])
   const [deviceName, setDeviceName] = useState('')
   const [message, setMessage] = useState('')
+  const [unlockDuration, setUnlockDuration] = useState('0') // 0 = unlimited
   const [isLoading, setIsLoading] = useState(false)
   
   useEffect(() => {
@@ -68,10 +70,17 @@ export function DevicesPage() {
     return matchesSearch && matchesStatus
   })
   
-  const handleCommand = async (device: Device, command: 'shutdown' | 'restart' | 'lock' | 'message') => {
+  const handleCommand = async (device: Device, command: 'shutdown' | 'restart' | 'lock' | 'message' | 'admin_unlock') => {
     if (command === 'message') {
       setSelectedDevice(device)
       setShowMessageModal(true)
+      return
+    }
+    
+    if (command === 'admin_unlock') {
+      setSelectedDevice(device)
+      setUnlockDuration('0')
+      setShowAdminUnlockModal(true)
       return
     }
     
@@ -81,6 +90,34 @@ export function DevicesPage() {
     } else {
       addToast('error', 'Failed to send command')
     }
+  }
+  
+  const handleAdminUnlock = async () => {
+    if (!selectedDevice) return
+    
+    setIsLoading(true)
+    const durationMinutes = parseInt(unlockDuration) || 0
+    const result = await sendDeviceCommand(
+      selectedDevice.id, 
+      'admin_unlock', 
+      { 
+        duration_minutes: durationMinutes,
+        unlocked_by: staff?.name || 'Admin'
+      },
+      staff?.id
+    )
+    
+    if (result) {
+      addToast('success', durationMinutes > 0 
+        ? `Device unlocked for ${durationMinutes} minutes` 
+        : 'Device unlocked (unlimited)')
+      setShowAdminUnlockModal(false)
+      setSelectedDevice(null)
+      setUnlockDuration('0')
+    } else {
+      addToast('error', 'Failed to unlock device')
+    }
+    setIsLoading(false)
   }
   
   const handleSendMessage = async () => {
@@ -570,6 +607,72 @@ export function DevicesPage() {
             </div>
           </div>
         )}
+      </Modal>
+      
+      {/* Admin Unlock Modal */}
+      <Modal
+        isOpen={showAdminUnlockModal}
+        onClose={() => setShowAdminUnlockModal(false)}
+        title="Admin Unlock Device"
+        size="sm"
+      >
+        <div className="space-y-4">
+          <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl">
+            <p className="text-sm text-emerald-400">
+              <strong>Superuser Mode:</strong> This will unlock the device without requiring payment or member login. 
+              Use this for maintenance, testing, or special access.
+            </p>
+          </div>
+          
+          {selectedDevice && (
+            <div className="flex items-center gap-3 p-3 bg-slate-800/50 rounded-lg">
+              <Monitor className="w-5 h-5 text-slate-400" />
+              <div>
+                <p className="font-medium text-slate-200">{selectedDevice.name}</p>
+                <p className="text-sm text-slate-500 font-mono">{selectedDevice.device_code}</p>
+              </div>
+            </div>
+          )}
+          
+          <div>
+            <label className="label">Unlock Duration</label>
+            <select
+              value={unlockDuration}
+              onChange={e => setUnlockDuration(e.target.value)}
+              className="select"
+            >
+              <option value="0">Unlimited (until manually locked)</option>
+              <option value="15">15 minutes</option>
+              <option value="30">30 minutes</option>
+              <option value="60">1 hour</option>
+              <option value="120">2 hours</option>
+              <option value="180">3 hours</option>
+              <option value="240">4 hours</option>
+              <option value="480">8 hours</option>
+            </select>
+            <p className="text-xs text-slate-500 mt-1">
+              {unlockDuration === '0' 
+                ? 'Device will stay unlocked until you send a lock command' 
+                : `Device will automatically lock after ${unlockDuration} minutes`}
+            </p>
+          </div>
+          
+          <div className="flex justify-end gap-3 pt-4 border-t border-slate-800">
+            <button
+              onClick={() => setShowAdminUnlockModal(false)}
+              className="btn-secondary"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleAdminUnlock}
+              disabled={isLoading}
+              className="btn-primary bg-emerald-600 hover:bg-emerald-500"
+            >
+              {isLoading ? 'Unlocking...' : 'Unlock Device'}
+            </button>
+          </div>
+        </div>
       </Modal>
     </div>
   )
