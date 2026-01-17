@@ -498,10 +498,19 @@ export function subscribeToDevice(
         filter: `device_code=eq.${deviceCode}`
       },
       (payload) => {
+        console.log('🔔 Device update received:', payload.new)
         callback(payload.new as Device)
       }
     )
-    .subscribe()
+    .subscribe((status, err) => {
+      if (status === 'SUBSCRIBED') {
+        console.log('✅ Device channel subscribed successfully for:', deviceCode)
+      } else if (status === 'CHANNEL_ERROR') {
+        console.error('❌ Device channel error:', err)
+      } else {
+        console.log('📡 Device channel status:', status)
+      }
+    })
 }
 
 export function subscribeToSession(
@@ -521,6 +530,7 @@ export function subscribeToSession(
         filter: `device_id=eq.${deviceId}`
       },
       async (payload) => {
+        console.log('🔔 Session change received:', payload.eventType, payload.new)
         if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
           const session = payload.new as Session
           if (session.status === 'active') {
@@ -534,7 +544,15 @@ export function subscribeToSession(
         }
       }
     )
-    .subscribe()
+    .subscribe((status, err) => {
+      if (status === 'SUBSCRIBED') {
+        console.log('✅ Sessions channel subscribed successfully for device:', deviceId)
+      } else if (status === 'CHANNEL_ERROR') {
+        console.error('❌ Sessions channel error:', err)
+      } else {
+        console.log('📡 Sessions channel status:', status)
+      }
+    })
 }
 
 export function subscribeToCommands(
@@ -554,10 +572,21 @@ export function subscribeToCommands(
         filter: `device_id=eq.${deviceId}`
       },
       (payload) => {
+        console.log('🔔 Received command via realtime:', payload.new)
         callback(payload.new as DeviceCommand)
       }
     )
-    .subscribe()
+    .subscribe((status, err) => {
+      if (status === 'SUBSCRIBED') {
+        console.log('✅ Commands channel subscribed successfully for device:', deviceId)
+      } else if (status === 'CHANNEL_ERROR') {
+        console.error('❌ Commands channel error:', err)
+      } else if (status === 'TIMED_OUT') {
+        console.error('⏱️ Commands channel subscription timed out')
+      } else {
+        console.log('📡 Commands channel status:', status)
+      }
+    })
 }
 
 export function subscribeToMemberCredits(
@@ -577,11 +606,20 @@ export function subscribeToMemberCredits(
         filter: `id=eq.${memberId}`
       },
       (payload) => {
+        console.log('🔔 Member credits update received:', payload.new)
         const member = payload.new as Member
         callback(member.credits)
       }
     )
-    .subscribe()
+    .subscribe((status, err) => {
+      if (status === 'SUBSCRIBED') {
+        console.log('✅ Member credits channel subscribed for:', memberId)
+      } else if (status === 'CHANNEL_ERROR') {
+        console.error('❌ Member credits channel error:', err)
+      } else {
+        console.log('📡 Member credits channel status:', status)
+      }
+    })
 }
 
 export function unsubscribe(channel: RealtimeChannel): void {
