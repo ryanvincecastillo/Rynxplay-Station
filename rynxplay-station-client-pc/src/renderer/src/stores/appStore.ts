@@ -19,7 +19,9 @@ import {
   subscribeToSession,
   subscribeToCommands,
   subscribeToMemberCredits,
-  unsubscribe
+  unsubscribe,
+  startCommandPolling,
+  stopCommandPolling
 } from '../lib/supabase'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 
@@ -41,6 +43,11 @@ interface AppStore {
   message: string | null
   error: string | null
   
+  // Admin unlock state
+  isAdminUnlocked: boolean
+  adminUnlockExpiresAt: number | null // timestamp, null = unlimited
+  adminUnlockedBy: string | null
+  
   // Timer state
   timeRemaining: number
   totalSecondsUsed: number
@@ -57,6 +64,8 @@ interface AppStore {
   // Lock/Unlock
   lock: () => Promise<void>
   unlock: () => Promise<void>
+  adminUnlock: (durationMinutes: number, unlockedBy: string) => Promise<void>
+  checkAdminUnlockExpiry: () => void
   
   // Session management
   startGuestSession: (timeSeconds: number) => void
@@ -100,6 +109,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
   timeRemaining: 0,
   totalSecondsUsed: 0,
   channels: [],
+  
+  // Admin unlock state
+  isAdminUnlocked: false,
+  adminUnlockExpiresAt: null,
+  adminUnlockedBy: null,
 
   initialize: async () => {
     try {
@@ -311,7 +325,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
   lock: async () => {
     const { device } = get()
     
-    set({ isLocked: true, screen: 'lock' })
+    // Clear admin unlock state when locking
+    set({ 
+      isLocked: true, 
+      screen: 'lock',
+      isAdminUnlocked: false,
+      adminUnlockExpiresAt: null,
+      adminUnlockedBy: null
+    })
     await window.api.lockScreen()
     
     if (device) {
@@ -327,6 +348,64 @@ export const useAppStore = create<AppStore>((set, get) => ({
     
     if (device) {
       await updateDeviceStatus(device.id, 'in_use', false)
+    }
+  },
+  
+  adminUnlock: async (durationMinutes: number, unlockedBy: string) => {
+    const { device, showMessage } = get()
+    
+    // Calculate expiry time (0 = unlimited)
+    const expiresAt = durationMinutes > 0 
+      ? Date.now() + (durationMinutes * 60 * 1000) 
+      : null
+    
+    set({
+      isLocked: false,
+      isAdminUnlocked: true,
+      adminUnlockExpiresAt: expiresAt,
+      adminUnlockedBy: unlockedBy,
+      screen: 'session',
+      session: {
+        id: 'admin-unlock',
+        device_id: device?.id || '',
+        member_id: null,
+        rate_id: null,
+        session_type: 'guest',
+        started_at: new Date().toISOString(),
+        ended_at: null,
+        paused_at: null,
+        time_remaining_seconds: durationMinutes > 0 ? durationMinutes * 60 : null,
+        total_seconds_used: 0,
+        total_amount: 0,
+        status: 'active',
+        created_at: new Date().toISOString()
+      },
+      timeRemaining: durationMinutes > 0 ? durationMinutes * 60 : 0
+    })
+    
+    await window.api.unlockScreen()
+    
+    if (device) {
+      await updateDeviceStatus(device.id, 'in_use', false)
+    }
+    
+    // Start expiry check interval if there's a time limit
+    if (durationMinutes > 0) {
+      startAdminUnlockExpiryCheck(get)
+    }
+    
+    const durationText = durationMinutes > 0 ? `for ${durationMinutes} minutes` : '(unlimited)'
+    showMessage(`🔓 Admin unlocked ${durationText} by ${unlockedBy}`)
+  },
+  
+  checkAdminUnlockExpiry: () => {
+    const { isAdminUnlocked, adminUnlockExpiresAt, lock, showMessage } = get()
+    
+    if (!isAdminUnlocked || !adminUnlockExpiresAt) return
+    
+    if (Date.now() >= adminUnlockExpiresAt) {
+      showMessage('⏱️ Admin unlock time expired. Locking device...')
+      setTimeout(() => lock(), 3000)
     }
   },
 
@@ -498,7 +577,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   processCommand: async (command) => {
-    const { showMessage, lock, endCurrentSession } = get()
+    const { showMessage, lock, endCurrentSession, adminUnlock } = get()
+    
+    console.log('🎮 Processing command:', command.command_type, command.payload)
     
     try {
       switch (command.command_type) {
@@ -521,6 +602,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
           break
           
         case 'unlock':
+          // Regular unlock - just mark as executed
+          await markCommandExecuted(command.id, true)
+          break
+          
+        case 'admin_unlock':
+          // Admin superuser unlock
+          const durationMinutes = (command.payload as any)?.duration_minutes || 0
+          const unlockedBy = (command.payload as any)?.unlocked_by || 'Admin'
+          await adminUnlock(durationMinutes, unlockedBy)
           await markCommandExecuted(command.id, true)
           break
           
@@ -586,6 +676,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       unsubscribe(channel)
     })
     
+    // Stop command polling
+    stopCommandPolling()
+    
     set({ channels: [] })
     
     window.api.removeDisplayMessageListener()
@@ -638,6 +731,12 @@ function setupSubscriptions(
   channels.push(commandChannel)
   
   set({ channels })
+  
+  // ALSO start polling as a backup in case realtime doesn't work
+  // This polls every 3 seconds for new commands
+  startCommandPolling(deviceId, (command) => {
+    get().processCommand(command)
+  }, 3000)
 }
 
 let heartbeatInterval: NodeJS.Timeout | null = null
@@ -651,4 +750,17 @@ function startHeartbeatInterval(deviceId: string): void {
   heartbeatInterval = setInterval(() => {
     sendHeartbeat(deviceId)
   }, 30000)
+}
+
+let adminUnlockExpiryInterval: NodeJS.Timeout | null = null
+
+function startAdminUnlockExpiryCheck(get: () => AppStore): void {
+  if (adminUnlockExpiryInterval) {
+    clearInterval(adminUnlockExpiryInterval)
+  }
+  
+  // Check every 10 seconds if admin unlock has expired
+  adminUnlockExpiryInterval = setInterval(() => {
+    get().checkAdminUnlockExpiry()
+  }, 10000)
 }

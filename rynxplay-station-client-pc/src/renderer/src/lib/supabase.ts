@@ -398,8 +398,6 @@ export async function chargeMemberCredits(
 export async function getPendingCommands(deviceId: string): Promise<DeviceCommand[]> {
   const supabase = getSupabase()
   
-  debugLog('info', `Fetching pending commands for device: ${deviceId.slice(0, 8)}...`)
-  
   const { data, error } = await supabase
     .from('device_commands')
     .select('*')
@@ -502,7 +500,8 @@ export async function getBranchById(branchId: string): Promise<Branch | null> {
 }
 
 // ============================================
-// REALTIME SUBSCRIPTIONS (with debug logging)
+// REALTIME SUBSCRIPTIONS 
+// Removed filters - filter client-side instead
 // ============================================
 
 export function subscribeToDevice(
@@ -513,24 +512,28 @@ export function subscribeToDevice(
   
   debugLog('info', `Subscribing to device: ${deviceCode}`)
   
+  // Use subscription WITHOUT filter - filter client-side
   const channel = supabase
-    .channel(`device-${deviceCode}`)
+    .channel('device-changes')
     .on(
       'postgres_changes',
       {
         event: 'UPDATE',
         schema: 'public',
-        table: 'devices',
-        filter: `device_code=eq.${deviceCode}`
+        table: 'devices'
       },
       (payload) => {
-        debugLog('command', `Device update received: ${JSON.stringify(payload.new).slice(0, 100)}...`)
-        callback(payload.new as Device)
+        // Filter client-side
+        const device = payload.new as Device
+        if (device.device_code === deviceCode) {
+          debugLog('command', `Device update received for ${deviceCode}`)
+          callback(device)
+        }
       }
     )
     .subscribe((status, err) => {
       if (status === 'SUBSCRIBED') {
-        debugLog('success', `Device channel SUBSCRIBED: ${deviceCode}`)
+        debugLog('success', `Device channel SUBSCRIBED`)
       } else if (status === 'CHANNEL_ERROR') {
         debugLog('error', `Device channel ERROR: ${err?.message || 'Unknown error'}`)
       } else if (status === 'TIMED_OUT') {
@@ -553,27 +556,30 @@ export function subscribeToSession(
   
   debugLog('info', `Subscribing to sessions for device: ${deviceId.slice(0, 8)}...`)
   
+  // Use subscription WITHOUT filter - filter client-side
   const channel = supabase
-    .channel(`sessions-${deviceId}`)
+    .channel('session-changes')
     .on(
       'postgres_changes',
       {
         event: '*',
         schema: 'public',
-        table: 'sessions',
-        filter: `device_id=eq.${deviceId}`
+        table: 'sessions'
       },
       async (payload) => {
-        debugLog('command', `Session ${payload.eventType}: ${(payload.new as any)?.status || 'deleted'}`)
-        if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
-          const session = payload.new as Session
-          if (session.status === 'active') {
-            const fullSession = await getActiveSession(deviceId)
-            callback(fullSession)
-          } else {
-            callback(null)
+        // Filter client-side
+        const session = payload.new as Session
+        if (session && session.device_id === deviceId) {
+          debugLog('command', `Session ${payload.eventType} for this device`)
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            if (session.status === 'active') {
+              const fullSession = await getActiveSession(deviceId)
+              callback(fullSession)
+            } else {
+              callback(null)
+            }
           }
-        } else if (payload.eventType === 'DELETE') {
+        } else if (payload.eventType === 'DELETE' && (payload.old as any)?.device_id === deviceId) {
           callback(null)
         }
       }
@@ -601,22 +607,25 @@ export function subscribeToCommands(
   
   debugLog('info', `Subscribing to commands for device: ${deviceId.slice(0, 8)}...`)
   
+  // Use subscription WITHOUT filter - filter client-side
   const channel = supabase
-    .channel(`commands-${deviceId}`)
+    .channel('command-changes')
     .on(
       'postgres_changes',
       {
         event: 'INSERT',
         schema: 'public',
-        table: 'device_commands',
-        filter: `device_id=eq.${deviceId}`
+        table: 'device_commands'
       },
       (payload) => {
+        // Filter client-side
         const command = payload.new as DeviceCommand
-        debugLog('command', `🎮 COMMAND RECEIVED: ${command.command_type}`)
-        debugLog('info', `Command ID: ${command.id}`)
-        debugLog('info', `Payload: ${JSON.stringify(command.payload)}`)
-        callback(command)
+        if (command.device_id === deviceId) {
+          debugLog('command', `🎮 COMMAND RECEIVED: ${command.command_type}`)
+          debugLog('info', `Command ID: ${command.id}`)
+          debugLog('info', `Payload: ${JSON.stringify(command.payload)}`)
+          callback(command)
+        }
       }
     )
     .subscribe((status, err) => {
@@ -644,20 +653,23 @@ export function subscribeToMemberCredits(
   
   debugLog('info', `Subscribing to member credits: ${memberId.slice(0, 8)}...`)
   
+  // Use subscription WITHOUT filter - filter client-side
   const channel = supabase
-    .channel(`member-${memberId}`)
+    .channel('member-changes')
     .on(
       'postgres_changes',
       {
         event: 'UPDATE',
         schema: 'public',
-        table: 'members',
-        filter: `id=eq.${memberId}`
+        table: 'members'
       },
       (payload) => {
-        debugLog('command', `Member credits update received`)
+        // Filter client-side
         const member = payload.new as Member
-        callback(member.credits)
+        if (member.id === memberId) {
+          debugLog('command', `Member credits update: ${member.credits}`)
+          callback(member.credits)
+        }
       }
     )
     .subscribe((status, err) => {
@@ -680,29 +692,40 @@ export function unsubscribe(channel: RealtimeChannel): void {
 }
 
 // ============================================
-// POLLING FALLBACK (if realtime doesn't work)
+// POLLING FALLBACK (always works, use this if realtime fails)
 // ============================================
 
-let pollingInterval: NodeJS.Timeout | null = null
+let pollingInterval: ReturnType<typeof setInterval> | null = null
 
 export function startCommandPolling(
   deviceId: string, 
   callback: (command: DeviceCommand) => void,
-  intervalMs: number = 5000
+  intervalMs: number = 3000
 ): void {
-  debugLog('info', `Starting command polling (every ${intervalMs}ms)`)
+  debugLog('info', `🔄 Starting command polling (every ${intervalMs}ms)`)
   
   if (pollingInterval) {
     clearInterval(pollingInterval)
   }
   
-  pollingInterval = setInterval(async () => {
-    const commands = await getPendingCommands(deviceId)
-    for (const command of commands) {
-      debugLog('command', `[POLL] Command found: ${command.command_type}`)
-      callback(command)
-    }
+  // Initial fetch
+  fetchAndProcessCommands(deviceId, callback)
+  
+  // Then poll at interval
+  pollingInterval = setInterval(() => {
+    fetchAndProcessCommands(deviceId, callback)
   }, intervalMs)
+}
+
+async function fetchAndProcessCommands(
+  deviceId: string,
+  callback: (command: DeviceCommand) => void
+): Promise<void> {
+  const commands = await getPendingCommands(deviceId)
+  for (const command of commands) {
+    debugLog('command', `[POLL] Processing command: ${command.command_type}`)
+    callback(command)
+  }
 }
 
 export function stopCommandPolling(): void {
