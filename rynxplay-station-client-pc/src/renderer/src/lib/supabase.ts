@@ -7,12 +7,24 @@ const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY
 
 let supabaseClient: SupabaseClient | null = null
 
+// Debug logging helper
+function debugLog(type: 'info' | 'success' | 'error' | 'command', message: string) {
+  const logFn = (window as any).addDebugLog
+  if (logFn) {
+    logFn(type, message)
+  }
+  // Also log to console
+  const prefix = type === 'success' ? '✅' : type === 'error' ? '❌' : type === 'command' ? '🎮' : '📡'
+  console.log(`${prefix} [Supabase] ${message}`)
+}
+
 export function initSupabase(): SupabaseClient {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     throw new Error('Supabase credentials not configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env file.')
   }
   
   if (!supabaseClient) {
+    debugLog('info', 'Initializing Supabase client...')
     supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       realtime: {
         params: {
@@ -20,6 +32,7 @@ export function initSupabase(): SupabaseClient {
         }
       }
     })
+    debugLog('success', 'Supabase client initialized')
   }
   return supabaseClient
 }
@@ -385,6 +398,8 @@ export async function chargeMemberCredits(
 export async function getPendingCommands(deviceId: string): Promise<DeviceCommand[]> {
   const supabase = getSupabase()
   
+  debugLog('info', `Fetching pending commands for device: ${deviceId.slice(0, 8)}...`)
+  
   const { data, error } = await supabase
     .from('device_commands')
     .select('*')
@@ -393,8 +408,13 @@ export async function getPendingCommands(deviceId: string): Promise<DeviceComman
     .order('created_at', { ascending: true })
 
   if (error) {
+    debugLog('error', `Error getting pending commands: ${error.message}`)
     console.error('Error getting pending commands:', error)
     return []
+  }
+
+  if (data && data.length > 0) {
+    debugLog('info', `Found ${data.length} pending command(s)`)
   }
 
   return data || []
@@ -421,6 +441,7 @@ export async function markCommandExecuted(
     return false
   }
 
+  debugLog('success', `Command ${commandId.slice(0, 8)}... marked as ${success ? 'executed' : 'failed'}`)
   return true
 }
 
@@ -480,14 +501,19 @@ export async function getBranchById(branchId: string): Promise<Branch | null> {
   return data
 }
 
-// Realtime subscriptions
+// ============================================
+// REALTIME SUBSCRIPTIONS (with debug logging)
+// ============================================
+
 export function subscribeToDevice(
   deviceCode: string,
   callback: (device: Device) => void
 ): RealtimeChannel {
   const supabase = getSupabase()
   
-  return supabase
+  debugLog('info', `Subscribing to device: ${deviceCode}`)
+  
+  const channel = supabase
     .channel(`device-${deviceCode}`)
     .on(
       'postgres_changes',
@@ -498,19 +524,25 @@ export function subscribeToDevice(
         filter: `device_code=eq.${deviceCode}`
       },
       (payload) => {
-        console.log('🔔 Device update received:', payload.new)
+        debugLog('command', `Device update received: ${JSON.stringify(payload.new).slice(0, 100)}...`)
         callback(payload.new as Device)
       }
     )
     .subscribe((status, err) => {
       if (status === 'SUBSCRIBED') {
-        console.log('✅ Device channel subscribed successfully for:', deviceCode)
+        debugLog('success', `Device channel SUBSCRIBED: ${deviceCode}`)
       } else if (status === 'CHANNEL_ERROR') {
-        console.error('❌ Device channel error:', err)
+        debugLog('error', `Device channel ERROR: ${err?.message || 'Unknown error'}`)
+      } else if (status === 'TIMED_OUT') {
+        debugLog('error', `Device channel TIMED_OUT`)
+      } else if (status === 'CLOSED') {
+        debugLog('info', `Device channel CLOSED`)
       } else {
-        console.log('📡 Device channel status:', status)
+        debugLog('info', `Device channel status: ${status}`)
       }
     })
+
+  return channel
 }
 
 export function subscribeToSession(
@@ -519,7 +551,9 @@ export function subscribeToSession(
 ): RealtimeChannel {
   const supabase = getSupabase()
   
-  return supabase
+  debugLog('info', `Subscribing to sessions for device: ${deviceId.slice(0, 8)}...`)
+  
+  const channel = supabase
     .channel(`sessions-${deviceId}`)
     .on(
       'postgres_changes',
@@ -530,7 +564,7 @@ export function subscribeToSession(
         filter: `device_id=eq.${deviceId}`
       },
       async (payload) => {
-        console.log('🔔 Session change received:', payload.eventType, payload.new)
+        debugLog('command', `Session ${payload.eventType}: ${(payload.new as any)?.status || 'deleted'}`)
         if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
           const session = payload.new as Session
           if (session.status === 'active') {
@@ -546,13 +580,17 @@ export function subscribeToSession(
     )
     .subscribe((status, err) => {
       if (status === 'SUBSCRIBED') {
-        console.log('✅ Sessions channel subscribed successfully for device:', deviceId)
+        debugLog('success', `Sessions channel SUBSCRIBED`)
       } else if (status === 'CHANNEL_ERROR') {
-        console.error('❌ Sessions channel error:', err)
+        debugLog('error', `Sessions channel ERROR: ${err?.message || 'Unknown error'}`)
+      } else if (status === 'TIMED_OUT') {
+        debugLog('error', `Sessions channel TIMED_OUT`)
       } else {
-        console.log('📡 Sessions channel status:', status)
+        debugLog('info', `Sessions channel status: ${status}`)
       }
     })
+
+  return channel
 }
 
 export function subscribeToCommands(
@@ -561,7 +599,9 @@ export function subscribeToCommands(
 ): RealtimeChannel {
   const supabase = getSupabase()
   
-  return supabase
+  debugLog('info', `Subscribing to commands for device: ${deviceId.slice(0, 8)}...`)
+  
+  const channel = supabase
     .channel(`commands-${deviceId}`)
     .on(
       'postgres_changes',
@@ -572,21 +612,28 @@ export function subscribeToCommands(
         filter: `device_id=eq.${deviceId}`
       },
       (payload) => {
-        console.log('🔔 Received command via realtime:', payload.new)
-        callback(payload.new as DeviceCommand)
+        const command = payload.new as DeviceCommand
+        debugLog('command', `🎮 COMMAND RECEIVED: ${command.command_type}`)
+        debugLog('info', `Command ID: ${command.id}`)
+        debugLog('info', `Payload: ${JSON.stringify(command.payload)}`)
+        callback(command)
       }
     )
     .subscribe((status, err) => {
       if (status === 'SUBSCRIBED') {
-        console.log('✅ Commands channel subscribed successfully for device:', deviceId)
+        debugLog('success', `Commands channel SUBSCRIBED ✓`)
       } else if (status === 'CHANNEL_ERROR') {
-        console.error('❌ Commands channel error:', err)
+        debugLog('error', `Commands channel ERROR: ${err?.message || 'Unknown error'}`)
       } else if (status === 'TIMED_OUT') {
-        console.error('⏱️ Commands channel subscription timed out')
+        debugLog('error', `Commands channel TIMED_OUT`)
+      } else if (status === 'CLOSED') {
+        debugLog('info', `Commands channel CLOSED`)
       } else {
-        console.log('📡 Commands channel status:', status)
+        debugLog('info', `Commands channel status: ${status}`)
       }
     })
+
+  return channel
 }
 
 export function subscribeToMemberCredits(
@@ -595,7 +642,9 @@ export function subscribeToMemberCredits(
 ): RealtimeChannel {
   const supabase = getSupabase()
   
-  return supabase
+  debugLog('info', `Subscribing to member credits: ${memberId.slice(0, 8)}...`)
+  
+  const channel = supabase
     .channel(`member-${memberId}`)
     .on(
       'postgres_changes',
@@ -606,23 +655,60 @@ export function subscribeToMemberCredits(
         filter: `id=eq.${memberId}`
       },
       (payload) => {
-        console.log('🔔 Member credits update received:', payload.new)
+        debugLog('command', `Member credits update received`)
         const member = payload.new as Member
         callback(member.credits)
       }
     )
     .subscribe((status, err) => {
       if (status === 'SUBSCRIBED') {
-        console.log('✅ Member credits channel subscribed for:', memberId)
+        debugLog('success', `Member credits channel SUBSCRIBED`)
       } else if (status === 'CHANNEL_ERROR') {
-        console.error('❌ Member credits channel error:', err)
+        debugLog('error', `Member credits channel ERROR: ${err?.message || 'Unknown error'}`)
       } else {
-        console.log('📡 Member credits channel status:', status)
+        debugLog('info', `Member credits channel status: ${status}`)
       }
     })
+
+  return channel
 }
 
 export function unsubscribe(channel: RealtimeChannel): void {
   const supabase = getSupabase()
   supabase.removeChannel(channel)
+  debugLog('info', 'Channel unsubscribed')
+}
+
+// ============================================
+// POLLING FALLBACK (if realtime doesn't work)
+// ============================================
+
+let pollingInterval: NodeJS.Timeout | null = null
+
+export function startCommandPolling(
+  deviceId: string, 
+  callback: (command: DeviceCommand) => void,
+  intervalMs: number = 5000
+): void {
+  debugLog('info', `Starting command polling (every ${intervalMs}ms)`)
+  
+  if (pollingInterval) {
+    clearInterval(pollingInterval)
+  }
+  
+  pollingInterval = setInterval(async () => {
+    const commands = await getPendingCommands(deviceId)
+    for (const command of commands) {
+      debugLog('command', `[POLL] Command found: ${command.command_type}`)
+      callback(command)
+    }
+  }, intervalMs)
+}
+
+export function stopCommandPolling(): void {
+  if (pollingInterval) {
+    clearInterval(pollingInterval)
+    pollingInterval = null
+    debugLog('info', 'Command polling stopped')
+  }
 }

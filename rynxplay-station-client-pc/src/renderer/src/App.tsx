@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useAppStore } from './stores/appStore'
-import { SetupScreen, PendingScreen, LockScreen, SessionScreen, MessageOverlay } from './components'
+import { SetupScreen, PendingScreen, LockScreen, SessionScreen, MessageOverlay, DebugOverlay } from './components'
 
 function LoadingScreen() {
   return (
@@ -59,6 +59,9 @@ function App() {
       
       {/* Message Overlay (highest z-index) */}
       {message && <MessageOverlay />}
+      
+      {/* Debug Overlay - Always visible for debugging */}
+      <DebugOverlay />
     </div>
   )
 }

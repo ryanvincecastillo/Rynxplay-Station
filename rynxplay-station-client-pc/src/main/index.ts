@@ -110,6 +110,19 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
+  // Add keyboard shortcut to open DevTools (Ctrl+Shift+D)
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.control && input.shift && input.key.toLowerCase() === 'd') {
+      mainWindow?.webContents.toggleDevTools()
+      event.preventDefault()
+    }
+    // Also allow F12 for DevTools
+    if (input.key === 'F12') {
+      mainWindow?.webContents.toggleDevTools()
+      event.preventDefault()
+    }
+  })
+
   // Load the renderer
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
