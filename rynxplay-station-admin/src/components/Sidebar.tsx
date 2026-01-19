@@ -11,7 +11,8 @@ import {
   Building2,
   ChevronLeft,
   Bell,
-  Play
+  Play,
+  Coins
 } from 'lucide-react'
 
 const navItems = [
@@ -20,6 +21,7 @@ const navItems = [
   { path: '/members', icon: Users, label: 'Members' },
   { path: '/sessions', icon: Timer, label: 'Sessions' },
   { path: '/transactions', icon: Receipt, label: 'Transactions' },
+  { path: '/kiosk', icon: Coins, label: 'Kiosk Sim' },
   { path: '/settings', icon: Settings, label: 'Settings' },
 ]
 

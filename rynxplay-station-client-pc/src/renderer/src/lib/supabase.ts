@@ -214,6 +214,24 @@ export async function getActiveSession(deviceId: string): Promise<Session | null
   return data
 }
 
+// Check if current session is still active (for polling)
+export async function checkSessionStatus(sessionId: string): Promise<Session | null> {
+  const supabase = getSupabase()
+  
+  const { data, error } = await supabase
+    .from('sessions')
+    .select('*, members(*), rates(*)')
+    .eq('id', sessionId)
+    .single()
+
+  if (error) {
+    console.error('Error checking session status:', error)
+    return null
+  }
+
+  return data
+}
+
 export async function updateSessionTimeRemaining(
   sessionId: string,
   timeRemainingSeconds: number
@@ -569,17 +587,23 @@ export function subscribeToSession(
       async (payload) => {
         // Filter client-side
         const session = payload.new as Session
+        const oldSession = payload.old as Session
+        
+        // Check if this session is for our device
         if (session && session.device_id === deviceId) {
-          debugLog('command', `Session ${payload.eventType} for this device`)
-          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
-            if (session.status === 'active') {
-              const fullSession = await getActiveSession(deviceId)
-              callback(fullSession)
-            } else {
-              callback(null)
-            }
+          debugLog('command', `Session ${payload.eventType} for this device, status: ${session.status}`)
+          
+          if (session.status === 'active') {
+            // Session is active, get full details
+            const fullSession = await getActiveSession(deviceId)
+            callback(fullSession)
+          } else {
+            // Session is no longer active (terminated, completed, etc.)
+            debugLog('info', `Session ended with status: ${session.status}`)
+            callback(null)
           }
-        } else if (payload.eventType === 'DELETE' && (payload.old as any)?.device_id === deviceId) {
+        } else if (payload.eventType === 'DELETE' && oldSession?.device_id === deviceId) {
+          debugLog('info', 'Session deleted for this device')
           callback(null)
         }
       }
@@ -733,5 +757,41 @@ export function stopCommandPolling(): void {
     clearInterval(pollingInterval)
     pollingInterval = null
     debugLog('info', 'Command polling stopped')
+  }
+}
+
+// ============================================
+// SESSION STATUS POLLING (backup for realtime)
+// ============================================
+
+let sessionPollingInterval: ReturnType<typeof setInterval> | null = null
+
+export function startSessionPolling(
+  sessionId: string,
+  onSessionEnded: () => void,
+  intervalMs: number = 5000
+): void {
+  debugLog('info', `🔄 Starting session polling (every ${intervalMs}ms)`)
+  
+  if (sessionPollingInterval) {
+    clearInterval(sessionPollingInterval)
+  }
+  
+  sessionPollingInterval = setInterval(async () => {
+    const session = await checkSessionStatus(sessionId)
+    
+    if (!session || session.status !== 'active') {
+      debugLog('command', `[POLL] Session no longer active: ${session?.status || 'not found'}`)
+      onSessionEnded()
+      stopSessionPolling()
+    }
+  }, intervalMs)
+}
+
+export function stopSessionPolling(): void {
+  if (sessionPollingInterval) {
+    clearInterval(sessionPollingInterval)
+    sessionPollingInterval = null
+    debugLog('info', 'Session polling stopped')
   }
 }

@@ -46,6 +46,10 @@ export function DebugOverlay() {
   // Toggle with Ctrl+Shift+L
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      
+      //handle if window key is pressed
+      if (e.key === 'Meta') return
+
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'l') {
         setIsVisible(prev => !prev)
         e.preventDefault()

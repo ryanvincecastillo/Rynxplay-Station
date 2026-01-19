@@ -1,7 +1,9 @@
 import { useAppStore } from '@/stores/appStore'
 import { CheckCircle, XCircle, AlertCircle, Info, X } from 'lucide-react'
+import type { ToastType } from '@/types'
+import type { LucideIcon } from 'lucide-react'
 
-const icons = {
+const icons: Record<ToastType, LucideIcon> = {
   success: CheckCircle,
   error: XCircle,
   warning: AlertCircle,
@@ -16,12 +18,12 @@ export function Toasts() {
   return (
     <div className="fixed bottom-6 right-6 z-50 space-y-3">
       {toasts.map(toast => {
-        const Icon = icons[toast.type]
+        const Icon = icons[toast.type] || Info // Fallback to Info icon
         
         return (
           <div
             key={toast.id}
-            className={`toast ${toast.type} min-w-[300px] max-w-md`}
+            className={`toast ${toast.type || 'info'} min-w-[300px] max-w-md`}
           >
             <Icon className="w-5 h-5 flex-shrink-0" />
             <p className="flex-1 text-sm">{toast.message}</p>

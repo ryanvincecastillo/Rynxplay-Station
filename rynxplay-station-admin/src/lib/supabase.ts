@@ -381,12 +381,17 @@ export async function getMembers(orgId: string): Promise<Member[]> {
   return data || []
 }
 
-export async function createMember(member: Partial<Member>): Promise<Member | null> {
+export async function createMember(orgId: string, member: Partial<Member>): Promise<Member | null> {
   const supabase = getSupabase()
   
   const { data, error } = await supabase
     .from('members')
-    .insert(member)
+    .insert({
+      ...member,
+      org_id: orgId,
+      credits: 0,
+      is_active: true
+    })
     .select()
     .single()
   
@@ -420,8 +425,8 @@ export async function updateMember(id: string, updates: Partial<Member>): Promis
 export async function addMemberCredits(
   memberId: string,
   amount: number,
-  branchId: string,
-  paymentMethod: string,
+  branchId?: string,
+  paymentMethod: string = 'cash',
   createdBy?: string
 ): Promise<boolean> {
   const supabase = getSupabase()
@@ -443,7 +448,10 @@ export async function addMemberCredits(
   // Update member credits
   const { error: updateError } = await supabase
     .from('members')
-    .update({ credits: newBalance })
+    .update({ 
+      credits: newBalance,
+      updated_at: new Date().toISOString()
+    })
     .eq('id', memberId)
   
   if (updateError) {
@@ -451,22 +459,24 @@ export async function addMemberCredits(
     return false
   }
   
-  // Create transaction record
-  const { error: txError } = await supabase
-    .from('transactions')
-    .insert({
-      member_id: memberId,
-      branch_id: branchId,
-      type: 'topup',
-      amount: amount,
-      balance_before: member.credits,
-      balance_after: newBalance,
-      payment_method: paymentMethod,
-      created_by: createdBy
-    })
-  
-  if (txError) {
-    console.error('Error creating transaction:', txError)
+  // Create transaction record if branch is provided
+  if (branchId) {
+    const { error: txError } = await supabase
+      .from('transactions')
+      .insert({
+        member_id: memberId,
+        branch_id: branchId,
+        type: 'topup',
+        amount: amount,
+        balance_before: member.credits,
+        balance_after: newBalance,
+        payment_method: paymentMethod,
+        created_by: createdBy
+      })
+    
+    if (txError) {
+      console.error('Error creating transaction:', txError)
+    }
   }
   
   return true
@@ -509,21 +519,72 @@ export async function getActiveSessions(orgId: string): Promise<Session[]> {
   return data || []
 }
 
-export async function endSession(sessionId: string): Promise<boolean> {
+// End session - updates session, device status, and sends lock command
+export async function endSession(
+  sessionId: string,
+  totalSecondsUsed?: number,
+  totalAmount?: number
+): Promise<boolean> {
   const supabase = getSupabase()
   
-  const { error } = await supabase
+  // First get the session to know the device ID
+  const { data: session, error: sessionError } = await supabase
     .from('sessions')
-    .update({
-      status: 'terminated',
-      ended_at: new Date().toISOString()
-    })
+    .select('*, devices(*)')
     .eq('id', sessionId)
+    .single()
   
-  if (error) {
-    console.error('Error ending session:', error)
+  if (sessionError || !session) {
+    console.error('Error getting session:', sessionError)
     return false
   }
+  
+  // Update session status
+  const updateData: Record<string, unknown> = {
+    status: 'terminated',
+    ended_at: new Date().toISOString()
+  }
+  
+  if (totalSecondsUsed !== undefined) {
+    updateData.total_seconds_used = totalSecondsUsed
+  }
+  if (totalAmount !== undefined) {
+    updateData.total_amount = totalAmount
+  }
+  
+  const { error: updateError } = await supabase
+    .from('sessions')
+    .update(updateData)
+    .eq('id', sessionId)
+  
+  if (updateError) {
+    console.error('Error ending session:', updateError)
+    return false
+  }
+  
+  // Update device status to online and locked
+  const { error: deviceError } = await supabase
+    .from('devices')
+    .update({
+      status: 'online',
+      is_locked: true,
+      current_session_id: null,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', session.device_id)
+  
+  if (deviceError) {
+    console.error('Error updating device status:', deviceError)
+  }
+  
+  // Send lock command to device
+  await supabase
+    .from('device_commands')
+    .insert({
+      device_id: session.device_id,
+      command_type: 'lock',
+      payload: { reason: 'Session ended by admin' }
+    })
   
   return true
 }

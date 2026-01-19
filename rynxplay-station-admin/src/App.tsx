@@ -9,6 +9,7 @@ import { SessionsPage } from '@/pages/SessionsPage'
 import { TransactionsPage } from '@/pages/TransactionsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { LoginPage } from '@/pages/LoginPage'
+import { KioskPage } from '@/pages/KioskPage'
 
 // Protected route wrapper
 function ProtectedRoute() {
@@ -70,6 +71,7 @@ function App() {
             <Route path="/members" element={<MembersPage />} />
             <Route path="/sessions" element={<SessionsPage />} />
             <Route path="/transactions" element={<TransactionsPage />} />
+            <Route path="/kiosk" element={<KioskPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Route>
         </Route>

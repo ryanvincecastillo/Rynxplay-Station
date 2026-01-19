@@ -21,7 +21,9 @@ import {
   subscribeToMemberCredits,
   unsubscribe,
   startCommandPolling,
-  stopCommandPolling
+  stopCommandPolling,
+  startSessionPolling,
+  stopSessionPolling
 } from '../lib/supabase'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 
@@ -70,7 +72,7 @@ interface AppStore {
   // Session management
   startGuestSession: (timeSeconds: number) => void
   handleMemberLogin: (username: string, pin: string) => Promise<boolean>
-  endCurrentSession: () => Promise<void>
+  endCurrentSession: (terminatedByAdmin?: boolean) => Promise<void>
   
   // Timer
   decrementTimer: () => void
@@ -190,6 +192,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
             })
             
             await window.api.unlockScreen()
+            
+            // Start session polling as backup
+            startSessionPolling(activeSession.id, () => {
+              get().endCurrentSession(true)
+            })
           } else {
             set({ screen: 'lock', isLocked: true })
             await window.api.lockScreen()
@@ -291,48 +298,48 @@ export const useAppStore = create<AppStore>((set, get) => ({
           deviceId: device.id 
         })
         
-        // Subscribe to device changes to detect approval
-        const channel = subscribeToDevice(deviceCode, async (updatedDevice) => {
-          if (updatedDevice.branch_id) {
-            // Device has been approved!
-            set({ device: updatedDevice })
-            
-            await window.api.saveConfig({ 
-              ...get().config, 
-              isApproved: true,
-              branchId: updatedDevice.branch_id
-            })
-            
-            // Reinitialize
-            get().cleanup()
-            await get().initialize()
-          }
-        })
-        
-        set({ channels: [channel], screen: 'pending' })
+        // If device already has branch_id, it's approved
+        if (device.branch_id) {
+          set({ screen: 'lock' })
+          await get().initialize() // Reinitialize with approved device
+        } else {
+          // Show pending screen
+          set({ screen: 'pending' })
+          
+          // Subscribe to device changes to detect approval
+          const channel = subscribeToDevice(deviceCode, async (updatedDevice) => {
+            if (updatedDevice.branch_id) {
+              set({ device: updatedDevice })
+              get().cleanup()
+              await get().initialize()
+            }
+          })
+          
+          set({ channels: [channel] })
+        }
         
         return true
       }
       
+      set({ error: 'Failed to register device' })
       return false
-    } catch (error) {
-      console.error('Registration error:', error)
+    } catch (err) {
+      console.error('Registration error:', err)
       set({ error: 'Failed to register device' })
       return false
     }
   },
 
   lock: async () => {
-    const { device } = get()
+    const { device, isAdminUnlocked } = get()
     
-    // Clear admin unlock state when locking
-    set({ 
-      isLocked: true, 
-      screen: 'lock',
-      isAdminUnlocked: false,
-      adminUnlockExpiresAt: null,
-      adminUnlockedBy: null
-    })
+    // Don't lock if admin unlocked
+    if (isAdminUnlocked) {
+      console.log('Device is admin unlocked, not locking')
+      return
+    }
+    
+    set({ isLocked: true, screen: 'lock' })
     await window.api.lockScreen()
     
     if (device) {
@@ -350,62 +357,53 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await updateDeviceStatus(device.id, 'in_use', false)
     }
   },
-  
+
   adminUnlock: async (durationMinutes: number, unlockedBy: string) => {
-    const { device, showMessage } = get()
-    
-    // Calculate expiry time (0 = unlimited)
     const expiresAt = durationMinutes > 0 
       ? Date.now() + (durationMinutes * 60 * 1000) 
       : null
     
     set({
-      isLocked: false,
       isAdminUnlocked: true,
       adminUnlockExpiresAt: expiresAt,
       adminUnlockedBy: unlockedBy,
-      screen: 'session',
-      session: {
-        id: 'admin-unlock',
-        device_id: device?.id || '',
-        member_id: null,
-        rate_id: null,
-        session_type: 'guest',
-        started_at: new Date().toISOString(),
-        ended_at: null,
-        paused_at: null,
-        time_remaining_seconds: durationMinutes > 0 ? durationMinutes * 60 : null,
-        total_seconds_used: 0,
-        total_amount: 0,
-        status: 'active',
-        created_at: new Date().toISOString()
-      },
-      timeRemaining: durationMinutes > 0 ? durationMinutes * 60 : 0
+      isLocked: false,
+      screen: 'session'
     })
     
     await window.api.unlockScreen()
     
-    if (device) {
-      await updateDeviceStatus(device.id, 'in_use', false)
-    }
+    get().showMessage(
+      durationMinutes > 0 
+        ? `Admin unlocked for ${durationMinutes} minutes by ${unlockedBy}` 
+        : `Admin unlocked (unlimited) by ${unlockedBy}`
+    )
     
-    // Start expiry check interval if there's a time limit
-    if (durationMinutes > 0) {
+    // Start checking for expiry if there's a time limit
+    if (expiresAt) {
       startAdminUnlockExpiryCheck(get)
     }
-    
-    const durationText = durationMinutes > 0 ? `for ${durationMinutes} minutes` : '(unlimited)'
-    showMessage(`🔓 Admin unlocked ${durationText} by ${unlockedBy}`)
   },
-  
+
   checkAdminUnlockExpiry: () => {
-    const { isAdminUnlocked, adminUnlockExpiresAt, lock, showMessage } = get()
+    const { isAdminUnlocked, adminUnlockExpiresAt, session } = get()
     
     if (!isAdminUnlocked || !adminUnlockExpiresAt) return
     
     if (Date.now() >= adminUnlockExpiresAt) {
-      showMessage('⏱️ Admin unlock time expired. Locking device...')
-      setTimeout(() => lock(), 3000)
+      // Admin unlock expired
+      set({
+        isAdminUnlocked: false,
+        adminUnlockExpiresAt: null,
+        adminUnlockedBy: null
+      })
+      
+      get().showMessage('Admin unlock expired')
+      
+      // If no active session, lock the device
+      if (!session) {
+        get().lock()
+      }
     }
   },
 
@@ -415,7 +413,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         id: 'guest-local',
         device_id: get().device?.id || '',
         member_id: null,
-        rate_id: get().device?.rate_id || null,
+        rate_id: null,
         session_type: 'guest',
         started_at: new Date().toISOString(),
         ended_at: null,
@@ -438,14 +436,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
   handleMemberLogin: async (username, pin) => {
     const { device } = get()
     
-    if (!device?.branches) {
-      set({ error: 'Device not properly configured' })
+    if (!device || !device.branch_id) {
+      set({ error: 'Device not configured' })
       return false
     }
-    
-    // Get org_id from branch
-    const orgId = (device.branches as any).org_id || (device.branches as any).organizations?.id
-    
+
+    // Get organization ID from device's branch
+    const branch = device.branches
+    if (!branch) {
+      set({ error: 'Branch information not available' })
+      return false
+    }
+
+    const orgId = (branch as any).org_id || (branch as any).organizations?.id
     if (!orgId) {
       set({ error: 'Organization not found' })
       return false
@@ -459,18 +462,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
     
     if (member.credits <= 0) {
-      set({ error: 'Insufficient credits. Please top up.' })
+      set({ error: 'Insufficient credits' })
       return false
     }
     
-    // Start member session
-    const rateId = device.rate_id || (device.rates as any)?.id
-    
+    // Get rate
+    const rateId = device.rate_id || device.rates?.id
     if (!rateId) {
       set({ error: 'No rate configured for this device' })
       return false
     }
     
+    // Start member session
     const session = await startMemberSession(device.id, member.id, rateId)
     
     if (!session) {
@@ -489,6 +492,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
     
     await window.api.unlockScreen()
     
+    // Start session polling as backup
+    startSessionPolling(session.id, () => {
+      get().endCurrentSession(true)
+    })
+    
     // Subscribe to member credit changes
     const channel = subscribeToMemberCredits(member.id, (credits) => {
       set((state) => ({
@@ -501,10 +509,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
     return true
   },
 
-  endCurrentSession: async () => {
+  endCurrentSession: async (terminatedByAdmin = false) => {
     const { session, device, totalSecondsUsed } = get()
     
-    if (session && session.id !== 'guest-local') {
+    // Stop session polling
+    stopSessionPolling()
+    
+    // Only update session in DB if it wasn't terminated by admin
+    // (Admin already updated it when they terminated)
+    if (session && session.id !== 'guest-local' && !terminatedByAdmin) {
       await endSession(session.id, totalSecondsUsed, session.total_amount)
     }
     
@@ -596,7 +609,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
           break
           
         case 'lock':
-          await endCurrentSession()
+          // Session was terminated by admin
+          await endCurrentSession(true)
           await lock()
           await markCommandExecuted(command.id, true)
           break
@@ -679,6 +693,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
     // Stop command polling
     stopCommandPolling()
     
+    // Stop session polling
+    stopSessionPolling()
+    
     set({ channels: [] })
     
     window.api.removeDisplayMessageListener()
@@ -699,7 +716,7 @@ function setupSubscriptions(
     set({ device })
     
     // Handle lock state changes
-    if (device.is_locked && !get().isLocked) {
+    if (device.is_locked && !get().isLocked && !get().isAdminUnlocked) {
       get().lock()
     }
   })
@@ -707,18 +724,33 @@ function setupSubscriptions(
   
   // Subscribe to session changes
   const sessionChannel = subscribeToSession(deviceId, async (session) => {
-    if (session) {
-      set({ 
-        session,
-        member: session.members || null,
-        timeRemaining: session.time_remaining_seconds || 0,
-        screen: 'session'
-      })
-      await get().unlock()
+    console.log('Session subscription callback:', session?.status || 'null')
+    
+    if (session && session.status === 'active') {
+      // New or updated active session
+      const currentSession = get().session
+      
+      // Only start a new session if we don't have one
+      if (!currentSession || currentSession.id !== session.id) {
+        set({ 
+          session,
+          member: session.members || null,
+          timeRemaining: session.time_remaining_seconds || 0,
+          screen: 'session'
+        })
+        await get().unlock()
+        
+        // Start session polling for this session
+        startSessionPolling(session.id, () => {
+          get().endCurrentSession(true)
+        })
+      }
     } else {
-      // No active session - lock
-      if (get().session) {
-        await get().endCurrentSession()
+      // No active session or session ended
+      const currentSession = get().session
+      if (currentSession && currentSession.id !== 'guest-local') {
+        console.log('Session ended via realtime, terminating locally')
+        await get().endCurrentSession(true)
       }
     }
   })

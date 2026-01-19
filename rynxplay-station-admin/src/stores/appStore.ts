@@ -10,7 +10,8 @@ import type {
   Rate, 
   Transaction,
   DashboardStats,
-  Toast 
+  Toast,
+  ToastType
 } from '@/types'
 import {
   initSupabase,
@@ -34,6 +35,12 @@ import {
 } from '@/lib/supabase'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { generateId } from '@/lib/utils'
+
+interface AddToastOptions {
+  type: ToastType
+  message: string
+  duration?: number
+}
 
 interface AppStore {
   // Auth state
@@ -82,7 +89,7 @@ interface AppStore {
   // UI actions
   toggleSidebar: () => void
   setCurrentBranch: (branch: Branch | null) => void
-  addToast: (type: Toast['type'], message: string, duration?: number) => void
+  addToast: (options: AddToastOptions) => void
   removeToast: (id: string) => void
   
   // Realtime
@@ -251,6 +258,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       get().fetchDevices(),
       get().fetchPendingDevices(),
       get().fetchMembers(),
+      get().fetchSessions(),
       get().fetchActiveSessions(),
       get().fetchRates(),
       get().fetchStats()
@@ -265,7 +273,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ currentBranch: branch })
   },
   
-  addToast: (type, message, duration = 5000) => {
+  addToast: ({ type, message, duration = 5000 }) => {
     const id = generateId()
     const toast: Toast = { id, type, message, duration }
     
@@ -287,7 +295,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     
     // Subscribe to device changes
     const deviceChannel = subscribeToDevices((payload) => {
-      if (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT') {
+      console.log('Device change:', payload.eventType)
+      if (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT' || payload.eventType === 'DELETE') {
         get().fetchDevices()
         get().fetchPendingDevices()
         get().fetchStats()
@@ -295,11 +304,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
     })
     channels.push(deviceChannel)
     
-    // Subscribe to session changes
+    // Subscribe to session changes - fetch BOTH sessions and activeSessions
     const sessionChannel = subscribeToSessions((payload) => {
-      if (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT') {
+      console.log('Session change:', payload.eventType, payload.new?.status)
+      if (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT' || payload.eventType === 'DELETE') {
+        // Fetch both sessions list and active sessions
+        get().fetchSessions()
         get().fetchActiveSessions()
         get().fetchStats()
+        // Also refresh devices since session changes affect device status
+        get().fetchDevices()
       }
     })
     channels.push(sessionChannel)
