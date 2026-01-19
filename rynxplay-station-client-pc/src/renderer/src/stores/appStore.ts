@@ -616,7 +616,51 @@ export const useAppStore = create<AppStore>((set, get) => ({
           break
           
         case 'unlock':
-          // Regular unlock - just mark as executed
+          // Unlock command - fetch and start the session
+          const payload = command.payload as any
+          const sessionId = payload?.session_id
+          const timeRemaining = payload?.time_remaining || 0
+          const sessionType = payload?.session_type || 'guest'
+          
+          console.log('🔓 Processing unlock command:', { sessionId, timeRemaining, sessionType })
+          
+          // Fetch the active session for this device
+          const { device: currentDevice } = get()
+          if (currentDevice) {
+            const activeSession = await getActiveSession(currentDevice.id)
+            
+            if (activeSession) {
+              console.log('✅ Found active session:', activeSession.id)
+              
+              // Set up the session
+              set({
+                session: activeSession,
+                member: activeSession.members || null,
+                timeRemaining: activeSession.time_remaining_seconds || timeRemaining,
+                totalSecondsUsed: activeSession.total_seconds_used || 0,
+                screen: 'session',
+                isLocked: false
+              })
+              
+              // Unlock the screen
+              await window.api.unlockScreen()
+              
+              // Update device status
+              await updateDeviceStatus(currentDevice.id, 'in_use', false)
+              
+              // Start session polling as backup
+              startSessionPolling(activeSession.id, () => {
+                get().endCurrentSession(true)
+              })
+              
+              showMessage(`Session started! ${sessionType === 'guest' ? 'Time remaining: ' + Math.floor(timeRemaining / 60) + ' minutes' : ''}`)
+            } else {
+              console.log('⚠️ No active session found, but unlock command received')
+              // Still unlock if commanded but no session found
+              // This might happen with manual admin unlocks
+            }
+          }
+          
           await markCommandExecuted(command.id, true)
           break
           
