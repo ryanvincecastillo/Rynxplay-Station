@@ -2,7 +2,7 @@ import { app, shell, BrowserWindow, ipcMain, Tray, Menu, nativeImage, screen, gl
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import Store from 'electron-store'
-import { exec, spawn } from 'child_process'
+import { exec } from 'child_process'
 import * as si from 'systeminformation'
 import * as QRCode from 'qrcode'
 import { v4 as uuidv4 } from 'uuid'
@@ -71,7 +71,7 @@ let floatingWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isLocked = true
 let isQuitting = false
-let isAuthorizedExit = false // Track if exit was authorized with kill code
+let isAuthorizedExit = false
 let floatingTimerVisible = true
 
 // Session state for floating timer
@@ -79,94 +79,266 @@ let currentSessionTime = 0
 let currentSessionType: 'guest' | 'member' | null = null
 
 // ============================================
+// WINDOWS SYSTEM LOCKDOWN
+// ============================================
+
+// Disable Windows key via registry
+function disableWindowsKeyViaRegistry(): void {
+  if (process.platform !== 'win32') return
+
+  const script = `
+    $path = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+    if (!(Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name "NoWinKeys" -Value 1 -Type DWord -Force
+  `
+  
+  exec(`powershell -Command "${script.replace(/\n/g, ' ')}"`, (error) => {
+    if (error) {
+      console.error('Failed to disable Windows key:', error.message)
+    } else {
+      console.log('✅ Windows key disabled')
+    }
+  })
+}
+
+function enableWindowsKeyViaRegistry(): void {
+  if (process.platform !== 'win32') return
+
+  const script = `
+    $path = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+    if (Test-Path $path) {
+      Remove-ItemProperty -Path $path -Name "NoWinKeys" -ErrorAction SilentlyContinue
+    }
+  `
+  
+  exec(`powershell -Command "${script.replace(/\n/g, ' ')}"`, (error) => {
+    if (!error) console.log('✅ Windows key enabled')
+  })
+}
+
+// Disable Task Manager
+function disableTaskManager(): void {
+  if (process.platform !== 'win32') return
+
+  const script = `
+    $path = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
+    if (!(Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+    Set-ItemProperty -Path $path -Name "DisableTaskMgr" -Value 1 -Type DWord -Force
+  `
+  
+  exec(`powershell -Command "${script.replace(/\n/g, ' ')}"`, (error) => {
+    if (!error) console.log('✅ Task Manager disabled')
+  })
+}
+
+function enableTaskManager(): void {
+  if (process.platform !== 'win32') return
+
+  const script = `
+    $path = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
+    if (Test-Path $path) {
+      Remove-ItemProperty -Path $path -Name "DisableTaskMgr" -ErrorAction SilentlyContinue
+    }
+  `
+  
+  exec(`powershell -Command "${script.replace(/\n/g, ' ')}"`, (error) => {
+    if (!error) console.log('✅ Task Manager enabled')
+  })
+}
+
+// Hide/Show Taskbar using Windows API
+function hideTaskbar(): void {
+  if (process.platform !== 'win32') return
+
+  const script = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class TaskbarHelper {
+    [DllImport("user32.dll")]
+    public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+    [DllImport("user32.dll")]
+    public static extern int ShowWindow(IntPtr hwnd, int nCmdShow);
+    
+    public static void Hide() {
+        IntPtr hwnd = FindWindow("Shell_TrayWnd", null);
+        ShowWindow(hwnd, 0);
+        // Also hide the start button
+        IntPtr startBtn = FindWindow("Button", "Start");
+        ShowWindow(startBtn, 0);
+    }
+}
+"@
+[TaskbarHelper]::Hide()
+  `
+  
+  exec(`powershell -Command "${script.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`, (error) => {
+    if (!error) console.log('✅ Taskbar hidden')
+  })
+}
+
+function showTaskbar(): void {
+  if (process.platform !== 'win32') return
+
+  const script = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class TaskbarHelper2 {
+    [DllImport("user32.dll")]
+    public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+    [DllImport("user32.dll")]
+    public static extern int ShowWindow(IntPtr hwnd, int nCmdShow);
+    
+    public static void Show() {
+        IntPtr hwnd = FindWindow("Shell_TrayWnd", null);
+        ShowWindow(hwnd, 5);
+        IntPtr startBtn = FindWindow("Button", "Start");
+        ShowWindow(startBtn, 5);
+    }
+}
+"@
+[TaskbarHelper2]::Show()
+  `
+  
+  exec(`powershell -Command "${script.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`, (error) => {
+    if (!error) console.log('✅ Taskbar shown')
+  })
+}
+
+// Register global shortcuts as additional protection
+function registerGlobalShortcuts(): void {
+  const shortcuts = [
+    'Alt+Tab',
+    'Alt+F4',
+    'Alt+Escape',
+    'Ctrl+Escape',
+    'Ctrl+Shift+Escape',
+    'Super',
+    'Super+D',
+    'Super+E', 
+    'Super+R',
+    'Super+Tab',
+    'Super+L',
+    'Super+M',
+    'Super+S',
+    'Super+I',
+    'Super+A',
+    'Super+X',
+    'F11'
+  ]
+
+  shortcuts.forEach(shortcut => {
+    try {
+      globalShortcut.register(shortcut, () => {
+        console.log(`🚫 Blocked: ${shortcut}`)
+        if (mainWindow && isLocked) {
+          mainWindow.show()
+          mainWindow.focus()
+          mainWindow.moveTop()
+        }
+      })
+    } catch (e) {
+      // Some may fail
+    }
+  })
+  console.log('✅ Global shortcuts registered')
+}
+
+function unregisterGlobalShortcuts(): void {
+  globalShortcut.unregisterAll()
+  console.log('✅ Global shortcuts unregistered')
+}
+
+// Combined lockdown functions
+function enableLockdownMode(): void {
+  console.log('🔒 Enabling lockdown mode...')
+  disableWindowsKeyViaRegistry()
+  disableTaskManager()
+  hideTaskbar()
+  registerGlobalShortcuts()
+}
+
+function disableLockdownMode(): void {
+  console.log('🔓 Disabling lockdown mode...')
+  enableWindowsKeyViaRegistry()
+  enableTaskManager()
+  showTaskbar()
+  unregisterGlobalShortcuts()
+}
+
+// ============================================
 // PROCESS PROTECTION
 // ============================================
 
-// Check for kill code in command line arguments
 function checkCommandLineKillCode(): boolean {
   const args = process.argv.slice(2)
-  return args.includes(`--kill-code=${ADMIN_KILL_CODE}`)
-}
-
-// Setup console input listener for kill code
-function setupConsoleKillCode(): void {
-  if (process.stdin.isTTY) {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout
-    })
-
-    console.log('🔐 RYNXPLAY Client running. Enter admin kill code to exit safely.')
-    
-    rl.on('line', (input) => {
-      if (input.trim() === ADMIN_KILL_CODE) {
-        console.log('✅ Kill code accepted. Exiting safely...')
-        isAuthorizedExit = true
-        isQuitting = true
-        app.quit()
-      } else if (input.trim().length > 0) {
-        console.log('❌ Invalid kill code.')
+  for (const arg of args) {
+    if (arg.startsWith('--kill-code=')) {
+      const code = arg.split('=')[1]
+      if (code === ADMIN_KILL_CODE) {
+        return true
       }
-    })
+    }
   }
+  return false
 }
 
-// Reboot system (called when process is terminated without authorization)
-function rebootSystem(): void {
-  console.log('⚠️ Unauthorized termination detected! Rebooting system...')
-  
-  if (process.platform === 'win32') {
-    exec('shutdown /r /t 5 /c "RYNXPLAY: Security reboot - unauthorized termination detected"')
-  } else {
-    exec('shutdown -r +1 "RYNXPLAY: Security reboot"')
-  }
-}
-
-// ============================================
-// WINDOWS KEY BLOCKING
-// ============================================
-
-function registerKeyboardBlocks(): void {
-  // Block common Windows key combinations when locked
-  const blockedShortcuts = [
-    'Super',           // Windows key alone
-    'Super+D',         // Show desktop
-    'Super+E',         // File explorer
-    'Super+R',         // Run dialog
-    'Super+Tab',       // Task view
-    'Super+L',         // Lock screen (Windows lock, not ours)
-    'Super+A',         // Action center
-    'Super+S',         // Search
-    'Super+I',         // Settings
-    'Super+X',         // Quick link menu
-    'Super+M',         // Minimize all
-    'Super+Shift+M',   // Restore minimized
-    'Alt+Tab',         // Task switcher
-    'Alt+F4',          // Close window
-    'Alt+Escape',      // Cycle windows
-    'Ctrl+Escape',     // Start menu
-    'Ctrl+Shift+Escape', // Task manager
-    'Ctrl+Alt+Delete', // Security options (can't fully block this)
-  ]
-
-  blockedShortcuts.forEach(shortcut => {
+function setupConsoleKillCode(): void {
+  if (process.stdin.isTTY || is.dev) {
     try {
-      globalShortcut.register(shortcut, () => {
-        // Do nothing - just capture and ignore
-        console.log(`Blocked shortcut: ${shortcut}`)
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+        terminal: false
+      })
+
+      console.log('')
+      console.log('═══════════════════════════════════════════════════════')
+      console.log('  🎮 RYNXPLAY STATION Client PC')
+      console.log('═══════════════════════════════════════════════════════')
+      console.log('  To safely exit while locked:')
+      console.log('  1. Type the admin kill code in this console')
+      console.log('  2. Or run with: --kill-code=YOUR_CODE')
+      console.log('  3. Or use tray icon → Admin Exit')
+      console.log('═══════════════════════════════════════════════════════')
+      console.log('')
+      
+      rl.on('line', (input) => {
+        const trimmed = input.trim()
+        if (trimmed === ADMIN_KILL_CODE) {
+          console.log('✅ Kill code accepted. Exiting safely...')
+          safeExit()
+        } else if (trimmed.length > 0) {
+          console.log('❌ Invalid kill code')
+        }
       })
     } catch (e) {
-      // Some shortcuts may not be registerable
-      console.log(`Could not register shortcut: ${shortcut}`)
+      // stdin not available
     }
-  })
-
-  console.log('🔒 Keyboard blocks registered')
+  }
 }
 
-function unregisterKeyboardBlocks(): void {
-  globalShortcut.unregisterAll()
-  console.log('🔓 Keyboard blocks unregistered')
+function safeExit(): void {
+  console.log('🛑 Safe exit initiated...')
+  isAuthorizedExit = true
+  isQuitting = true
+  
+  disableLockdownMode()
+  
+  setTimeout(() => {
+    app.quit()
+  }, 500)
+}
+
+function rebootSystem(): void {
+  console.log('⚠️ Unauthorized termination! Rebooting...')
+  
+  if (process.platform === 'win32') {
+    exec('shutdown /r /t 5 /c "RYNXPLAY: Security reboot - unauthorized termination"')
+  } else {
+    exec('shutdown -r +1')
+  }
 }
 
 // ============================================
@@ -174,11 +346,14 @@ function unregisterKeyboardBlocks(): void {
 // ============================================
 
 function createWindow(): void {
-  const { width, height } = screen.getPrimaryDisplay().workAreaSize
+  const primaryDisplay = screen.getPrimaryDisplay()
+  const { width, height } = primaryDisplay.bounds
   
   mainWindow = new BrowserWindow({
     width: width,
     height: height,
+    x: 0,
+    y: 0,
     show: false,
     frame: false,
     resizable: false,
@@ -191,11 +366,13 @@ function createWindow(): void {
     fullscreen: true,
     kiosk: true,
     autoHideMenuBar: true,
+    thickFrame: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
       nodeIntegration: false,
-      contextIsolation: true
+      contextIsolation: true,
+      devTools: is.dev
     }
   })
 
@@ -203,18 +380,17 @@ function createWindow(): void {
     if (isLocked) {
       mainWindow?.show()
       mainWindow?.focus()
-      registerKeyboardBlocks()
+      mainWindow?.moveTop()
+      enableLockdownMode()
     }
   })
 
-  // Prevent closing when locked
   mainWindow.on('close', (event) => {
     if (isLocked && !isQuitting) {
       event.preventDefault()
     }
   })
 
-  // Prevent minimize
   mainWindow.on('minimize', (event) => {
     if (isLocked) {
       event.preventDefault()
@@ -223,12 +399,25 @@ function createWindow(): void {
     }
   })
 
-  // Prevent losing focus when locked
+  // Aggressive refocus when locked
   mainWindow.on('blur', () => {
-    if (isLocked && mainWindow) {
+    if (isLocked && mainWindow && !isQuitting) {
+      mainWindow.focus()
+      mainWindow.moveTop()
       setTimeout(() => {
-        mainWindow?.focus()
-      }, 100)
+        if (isLocked && mainWindow) {
+          mainWindow.show()
+          mainWindow.focus()
+          mainWindow.moveTop()
+        }
+      }, 50)
+    }
+  })
+
+  mainWindow.on('show', () => {
+    if (isLocked && mainWindow) {
+      mainWindow.setAlwaysOnTop(true, 'screen-saver')
+      mainWindow.moveTop()
     }
   })
 
@@ -237,25 +426,34 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
-  // Add keyboard shortcut to open DevTools (Ctrl+Shift+D)
-  mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (input.control && input.shift && input.key.toLowerCase() === 'd') {
-      mainWindow?.webContents.toggleDevTools()
-      event.preventDefault()
-    }
-    // Also allow F12 for DevTools
-    if (input.key === 'F12') {
-      mainWindow?.webContents.toggleDevTools()
-      event.preventDefault()
-    }
-  })
+  if (is.dev) {
+    mainWindow.webContents.on('before-input-event', (event, input) => {
+      if (input.control && input.shift && input.key.toLowerCase() === 'd') {
+        mainWindow?.webContents.toggleDevTools()
+        event.preventDefault()
+      }
+      if (input.key === 'F12') {
+        mainWindow?.webContents.toggleDevTools()
+        event.preventDefault()
+      }
+    })
+  }
 
-  // Load the renderer
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  // Periodic focus enforcement when locked
+  setInterval(() => {
+    if (isLocked && mainWindow && !isQuitting) {
+      mainWindow.show()
+      mainWindow.focus()
+      mainWindow.moveTop()
+      mainWindow.setAlwaysOnTop(true, 'screen-saver')
+    }
+  }, 500)
 }
 
 // ============================================
@@ -282,6 +480,7 @@ function createFloatingWindow(): void {
     alwaysOnTop: true,
     transparent: true,
     hasShadow: true,
+    focusable: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -290,7 +489,6 @@ function createFloatingWindow(): void {
     }
   })
 
-  // Load the floating timer HTML
   const floatingHTML = `
     <!DOCTYPE html>
     <html>
@@ -400,9 +598,8 @@ function createFloatingWindow(): void {
           timerEl.textContent = formatTime(time);
           typeEl.textContent = sessionType === 'member' ? 'MEMBER' : 'GUEST';
           
-          // Color based on remaining time (for guest sessions)
+          timerEl.className = 'timer';
           if (sessionType === 'guest') {
-            timerEl.className = 'timer';
             if (time <= 60) timerEl.classList.add('danger');
             else if (time <= 300) timerEl.classList.add('warning');
           }
@@ -456,13 +653,11 @@ function createTray(): void {
   tray = new Tray(icon)
   tray.setToolTip('RYNXPLAY STATION Client')
   
-  // Double-click to show window
   tray.on('double-click', () => {
     if (isLocked) {
       mainWindow?.show()
       mainWindow?.focus()
     } else {
-      // Toggle floating timer visibility
       if (floatingTimerVisible) {
         hideFloatingTimer()
       } else {
@@ -487,7 +682,7 @@ function updateTrayMenu(): void {
       enabled: false
     },
     {
-      label: `Status: ${config.isApproved ? (isLocked ? 'Locked' : 'Active Session') : 'Pending Approval'}`,
+      label: `Status: ${config.isApproved ? (isLocked ? '🔒 Locked' : '🟢 Active') : '⏳ Pending'}`,
       enabled: false
     },
     { type: 'separator' },
@@ -505,20 +700,30 @@ function updateTrayMenu(): void {
     {
       label: 'Hide Timer',
       enabled: !isLocked && floatingTimerVisible,
-      click: () => {
-        hideFloatingTimer()
-      }
+      click: hideFloatingTimer
     },
     { type: 'separator' },
     {
-      label: 'Exit (Requires Kill Code)',
-      click: () => {
-        dialog.showMessageBox({
-          type: 'info',
-          title: 'Admin Exit',
-          message: 'To exit safely, run the app with:\n\n--kill-code=YOUR_ADMIN_CODE\n\nor enter the kill code in the console.',
-          buttons: ['OK']
-        })
+      label: '🔑 Admin Exit...',
+      click: async () => {
+        if (process.platform === 'win32') {
+          const psScript = `[System.Reflection.Assembly]::LoadWithPartialName('Microsoft.VisualBasic') | Out-Null; [Microsoft.VisualBasic.Interaction]::InputBox('Enter Admin Kill Code:', 'RYNXPLAY Admin Exit', '')`
+          exec(`powershell -Command "${psScript}"`, (error, stdout) => {
+            const code = stdout.trim()
+            if (code === ADMIN_KILL_CODE) {
+              safeExit()
+            } else if (code.length > 0) {
+              dialog.showErrorBox('Invalid Code', 'The kill code is incorrect.')
+            }
+          })
+        } else {
+          dialog.showMessageBox({
+            type: 'info',
+            title: 'Admin Exit',
+            message: `To exit, run with:\n--kill-code=${ADMIN_KILL_CODE}`,
+            buttons: ['OK']
+          })
+        }
       }
     }
   ])
@@ -530,7 +735,6 @@ function updateTrayMenu(): void {
 // SYSTEM SPECS & UTILITIES
 // ============================================
 
-// Generate or retrieve unique device code
 function getOrCreateDeviceCode(): string {
   let deviceCode = store.get('deviceCode') as string | null
   
@@ -543,114 +747,43 @@ function getOrCreateDeviceCode(): string {
   return deviceCode
 }
 
-// Get comprehensive system specifications
 async function getSystemSpecs(): Promise<SystemSpecs> {
   try {
     const [cpu, mem, graphics, diskLayout, osInfo, networkInterfaces] = await Promise.all([
-      si.cpu(),
-      si.mem(),
-      si.graphics(),
-      si.fsSize(),
-      si.osInfo(),
-      si.networkInterfaces()
+      si.cpu(), si.mem(), si.graphics(), si.fsSize(), si.osInfo(), si.networkInterfaces()
     ])
 
     const totalDisk = diskLayout.reduce((acc, disk) => acc + disk.size, 0)
     const usedDisk = diskLayout.reduce((acc, disk) => acc + disk.used, 0)
-    const freeDisk = totalDisk - usedDisk
 
     const primaryNetwork = Array.isArray(networkInterfaces) 
       ? networkInterfaces.find(n => !n.internal && n.mac !== '00:00:00:00:00:00') || networkInterfaces[0]
       : networkInterfaces
 
     return {
-      cpu: {
-        brand: cpu.brand,
-        manufacturer: cpu.manufacturer,
-        speed: cpu.speed,
-        cores: cpu.cores,
-        physicalCores: cpu.physicalCores
-      },
-      memory: {
-        total: mem.total,
-        free: mem.free,
-        used: mem.used
-      },
-      graphics: {
-        controllers: graphics.controllers.map(g => ({
-          model: g.model,
-          vendor: g.vendor,
-          vram: g.vram || 0
-        }))
-      },
-      disk: {
-        total: totalDisk,
-        used: usedDisk,
-        free: freeDisk
-      },
-      os: {
-        platform: osInfo.platform,
-        distro: osInfo.distro,
-        release: osInfo.release,
-        arch: osInfo.arch,
-        hostname: os.hostname()
-      },
-      network: {
-        mac: primaryNetwork?.mac || 'Unknown',
-        ip: primaryNetwork?.ip4 || 'Unknown'
-      }
+      cpu: { brand: cpu.brand, manufacturer: cpu.manufacturer, speed: cpu.speed, cores: cpu.cores, physicalCores: cpu.physicalCores },
+      memory: { total: mem.total, free: mem.free, used: mem.used },
+      graphics: { controllers: graphics.controllers.map(g => ({ model: g.model, vendor: g.vendor, vram: g.vram || 0 })) },
+      disk: { total: totalDisk, used: usedDisk, free: totalDisk - usedDisk },
+      os: { platform: osInfo.platform, distro: osInfo.distro, release: osInfo.release, arch: osInfo.arch, hostname: os.hostname() },
+      network: { mac: primaryNetwork?.mac || 'Unknown', ip: primaryNetwork?.ip4 || 'Unknown' }
     }
   } catch (error) {
-    console.error('Error getting system specs:', error)
     return {
-      cpu: {
-        brand: 'Unknown',
-        manufacturer: 'Unknown',
-        speed: 0,
-        cores: os.cpus().length,
-        physicalCores: os.cpus().length
-      },
-      memory: {
-        total: os.totalmem(),
-        free: os.freemem(),
-        used: os.totalmem() - os.freemem()
-      },
-      graphics: {
-        controllers: [{ model: 'Unknown', vendor: 'Unknown', vram: 0 }]
-      },
-      disk: {
-        total: 0,
-        used: 0,
-        free: 0
-      },
-      os: {
-        platform: os.platform(),
-        distro: os.type(),
-        release: os.release(),
-        arch: os.arch(),
-        hostname: os.hostname()
-      },
-      network: {
-        mac: 'Unknown',
-        ip: 'Unknown'
-      }
+      cpu: { brand: 'Unknown', manufacturer: 'Unknown', speed: 0, cores: os.cpus().length, physicalCores: os.cpus().length },
+      memory: { total: os.totalmem(), free: os.freemem(), used: os.totalmem() - os.freemem() },
+      graphics: { controllers: [{ model: 'Unknown', vendor: 'Unknown', vram: 0 }] },
+      disk: { total: 0, used: 0, free: 0 },
+      os: { platform: os.platform(), distro: os.type(), release: os.release(), arch: os.arch(), hostname: os.hostname() },
+      network: { mac: 'Unknown', ip: 'Unknown' }
     }
   }
 }
 
-// Generate QR code as data URL
 async function generateQRCode(data: string): Promise<string> {
   try {
-    return await QRCode.toDataURL(data, {
-      width: 256,
-      margin: 2,
-      color: {
-        dark: '#000000',
-        light: '#ffffff'
-      }
-    })
+    return await QRCode.toDataURL(data, { width: 256, margin: 2, color: { dark: '#000000', light: '#ffffff' } })
   } catch (error) {
-    console.error('Error generating QR code:', error)
     return ''
   }
 }
@@ -660,181 +793,88 @@ async function generateQRCode(data: string): Promise<string> {
 // ============================================
 
 function setupIpcHandlers(): void {
-  // Get stored configuration
-  ipcMain.handle('get-config', () => {
-    return getConfig()
-  })
-
-  // Save configuration
+  ipcMain.handle('get-config', () => getConfig())
   ipcMain.handle('save-config', (_event, config: Record<string, unknown>) => {
-    Object.entries(config).forEach(([key, value]) => {
-      store.set(key, value)
-    })
+    Object.entries(config).forEach(([key, value]) => store.set(key, value))
     updateTrayMenu()
     return true
   })
+  ipcMain.handle('get-device-code', () => getOrCreateDeviceCode())
+  ipcMain.handle('get-system-specs', async () => await getSystemSpecs())
+  ipcMain.handle('generate-qr-code', async (_event, data: string) => await generateQRCode(data))
 
-  // Get or create device code
-  ipcMain.handle('get-device-code', () => {
-    return getOrCreateDeviceCode()
-  })
-
-  // Get system specifications
-  ipcMain.handle('get-system-specs', async () => {
-    return await getSystemSpecs()
-  })
-
-  // Generate QR code
-  ipcMain.handle('generate-qr-code', async (_event, data: string) => {
-    return await generateQRCode(data)
-  })
-
-  // Lock the screen
   ipcMain.handle('lock-screen', () => {
     isLocked = true
-    
-    // Register keyboard blocks
-    registerKeyboardBlocks()
-    
-    // Hide floating timer
+    enableLockdownMode()
     hideFloatingTimer()
-    
-    // Show and configure main window for lock mode
     mainWindow?.setAlwaysOnTop(true, 'screen-saver')
     mainWindow?.setKiosk(true)
     mainWindow?.setSkipTaskbar(true)
     mainWindow?.setFullScreen(true)
     mainWindow?.show()
     mainWindow?.focus()
-    
+    mainWindow?.moveTop()
     updateTrayMenu()
     return true
   })
 
-  // Unlock the screen
   ipcMain.handle('unlock-screen', () => {
     isLocked = false
-    
-    // Unregister keyboard blocks
-    unregisterKeyboardBlocks()
-    
-    // Hide main window
+    disableLockdownMode()
     mainWindow?.setAlwaysOnTop(false)
     mainWindow?.setKiosk(false)
     mainWindow?.setSkipTaskbar(false)
     mainWindow?.setFullScreen(false)
     mainWindow?.hide()
-    
-    // Show floating timer
     showFloatingTimer()
-    
     updateTrayMenu()
     return true
   })
 
-  // Get lock status
-  ipcMain.handle('get-lock-status', () => {
-    return isLocked
-  })
-
-  // Update floating timer
+  ipcMain.handle('get-lock-status', () => isLocked)
   ipcMain.handle('update-floating-timer', (_event, time: number, sessionType: 'guest' | 'member') => {
     updateFloatingTimer(time, sessionType)
     return true
   })
+  ipcMain.handle('show-floating-timer', () => { showFloatingTimer(); return true })
+  ipcMain.handle('hide-floating-timer', () => { hideFloatingTimer(); return true })
+  ipcMain.on('hide-floating-timer', () => hideFloatingTimer())
 
-  // Show floating timer
-  ipcMain.handle('show-floating-timer', () => {
-    showFloatingTimer()
-    return true
-  })
-
-  // Hide floating timer
-  ipcMain.handle('hide-floating-timer', () => {
-    hideFloatingTimer()
-    return true
-  })
-
-  // Listen for hide request from floating timer window
-  ipcMain.on('hide-floating-timer', () => {
-    hideFloatingTimer()
-  })
-
-  // Execute system commands
   ipcMain.handle('execute-command', (_event, command: string) => {
     return new Promise((resolve, reject) => {
-      switch (command) {
-        case 'shutdown':
-          if (process.platform === 'win32') {
-            exec('shutdown /s /t 30 /c "RYNXPLAY: Session ended, shutting down..."', (error) => {
-              if (error) reject(error)
-              else resolve(true)
-            })
-          } else {
-            exec('shutdown -h +1', (error) => {
-              if (error) reject(error)
-              else resolve(true)
-            })
-          }
-          break
-        case 'restart':
-          if (process.platform === 'win32') {
-            exec('shutdown /r /t 30 /c "RYNXPLAY: Restarting..."', (error) => {
-              if (error) reject(error)
-              else resolve(true)
-            })
-          } else {
-            exec('shutdown -r +1', (error) => {
-              if (error) reject(error)
-              else resolve(true)
-            })
-          }
-          break
-        case 'cancel-shutdown':
-          if (process.platform === 'win32') {
-            exec('shutdown /a', (error) => {
-              if (error) reject(error)
-              else resolve(true)
-            })
-          } else {
-            exec('shutdown -c', (error) => {
-              if (error) reject(error)
-              else resolve(true)
-            })
-          }
-          break
-        default:
-          reject(new Error(`Unknown command: ${command}`))
+      if (command === 'shutdown') {
+        disableLockdownMode()
+        exec(process.platform === 'win32' ? 'shutdown /s /t 30 /c "RYNXPLAY: Shutting down..."' : 'shutdown -h +1', (e) => e ? reject(e) : resolve(true))
+      } else if (command === 'restart') {
+        disableLockdownMode()
+        exec(process.platform === 'win32' ? 'shutdown /r /t 30 /c "RYNXPLAY: Restarting..."' : 'shutdown -r +1', (e) => e ? reject(e) : resolve(true))
+      } else if (command === 'cancel-shutdown') {
+        exec(process.platform === 'win32' ? 'shutdown /a' : 'shutdown -c', (e) => e ? reject(e) : resolve(true))
+      } else {
+        reject(new Error(`Unknown command: ${command}`))
       }
     })
   })
 
-  // Show notification/message
   ipcMain.handle('show-message', (_event, message: string) => {
     mainWindow?.webContents.send('display-message', message)
     return true
   })
 
-  // Quit application (with kill code verification)
   ipcMain.handle('quit-app', (_event, killCode?: string) => {
     if (killCode === ADMIN_KILL_CODE) {
-      isAuthorizedExit = true
-      isQuitting = true
-      app.quit()
+      safeExit()
       return true
     }
     return false
   })
 
-  // Get basic system info (legacy support)
-  ipcMain.handle('get-system-info', () => {
-    return {
-      platform: process.platform,
-      hostname: os.hostname(),
-      arch: process.arch,
-      version: app.getVersion()
-    }
-  })
+  ipcMain.handle('get-system-info', () => ({
+    platform: process.platform,
+    hostname: os.hostname(),
+    arch: process.arch,
+    version: app.getVersion()
+  }))
 }
 
 function getConfig(): Record<string, unknown> {
@@ -852,13 +892,11 @@ function getConfig(): Record<string, unknown> {
 // APP LIFECYCLE
 // ============================================
 
-// Check for kill code on startup
 if (checkCommandLineKillCode()) {
-  console.log('✅ Kill code provided via command line. Safe exit enabled.')
+  console.log('✅ Kill code provided. Safe exit enabled.')
   isAuthorizedExit = true
 }
 
-// Prevent multiple instances
 const gotTheLock = app.requestSingleInstanceLock()
 
 if (!gotTheLock) {
@@ -866,32 +904,19 @@ if (!gotTheLock) {
 } else {
   app.on('second-instance', () => {
     if (mainWindow) {
-      if (isLocked) {
-        mainWindow.show()
-        mainWindow.focus()
-      } else if (floatingWindow) {
-        showFloatingTimer()
-      }
+      if (isLocked) { mainWindow.show(); mainWindow.focus() }
+      else if (floatingWindow) showFloatingTimer()
     }
   })
 
-  app.whenReady().then(() => {
-    // Set app user model id for windows
+  app.whenReady().then(async () => {
     electronApp.setAppUserModelId('com.rynxplay.station.client')
-
-    // Setup console kill code listener
     setupConsoleKillCode()
-
-    // Watch for shortcuts in development
-    app.on('browser-window-created', (_, window) => {
-      optimizer.watchWindowShortcuts(window)
-    })
-
+    app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
     setupIpcHandlers()
     createWindow()
     createFloatingWindow()
     createTray()
-
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
         createWindow()
@@ -902,30 +927,15 @@ if (!gotTheLock) {
 
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
-      if (!isAuthorizedExit && isLocked) {
-        // Unauthorized close while locked - REBOOT
-        rebootSystem()
-      }
+      if (!isAuthorizedExit && isLocked) rebootSystem()
       app.quit()
     }
   })
 
-  // Handle app quit
   app.on('before-quit', (event) => {
-    if (isLocked && !isQuitting) {
-      event.preventDefault()
-      return
-    }
-    
-    // If not authorized exit and we're locked, trigger reboot
-    if (!isAuthorizedExit && isLocked) {
-      event.preventDefault()
-      rebootSystem()
-    }
+    if (isLocked && !isQuitting) { event.preventDefault(); return }
+    if (!isAuthorizedExit && isLocked) { event.preventDefault(); rebootSystem() }
   })
 
-  app.on('will-quit', () => {
-    // Unregister all shortcuts on quit
-    globalShortcut.unregisterAll()
-  })
+  app.on('will-quit', () => disableLockdownMode())
 }
