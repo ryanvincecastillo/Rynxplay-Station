@@ -551,6 +551,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       totalSecondsUsed: newTotalSeconds
     })
     
+    // Update floating timer window
+    const displayTime = session.session_type === 'guest' ? newTimeRemaining : newTotalSeconds
+    window.api.updateFloatingTimer(displayTime, session.session_type)
+    
     // End session if time runs out (guest sessions)
     if (session.session_type === 'guest' && newTimeRemaining <= 0) {
       get().endCurrentSession()
@@ -632,11 +636,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
             if (activeSession) {
               console.log('✅ Found active session:', activeSession.id)
               
+              const sessionTime = activeSession.time_remaining_seconds || timeRemaining
+              
               // Set up the session
               set({
                 session: activeSession,
                 member: activeSession.members || null,
-                timeRemaining: activeSession.time_remaining_seconds || timeRemaining,
+                timeRemaining: sessionTime,
                 totalSecondsUsed: activeSession.total_seconds_used || 0,
                 screen: 'session',
                 isLocked: false
@@ -644,6 +650,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
               
               // Unlock the screen
               await window.api.unlockScreen()
+              
+              // Initialize floating timer with session time
+              const displayTime = activeSession.session_type === 'guest' ? sessionTime : (activeSession.total_seconds_used || 0)
+              await window.api.updateFloatingTimer(displayTime, activeSession.session_type)
               
               // Update device status
               await updateDeviceStatus(currentDevice.id, 'in_use', false)
@@ -653,7 +663,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
                 get().endCurrentSession(true)
               })
               
-              showMessage(`Session started! ${sessionType === 'guest' ? 'Time remaining: ' + Math.floor(timeRemaining / 60) + ' minutes' : ''}`)
+              showMessage(`Session started! ${activeSession.session_type === 'guest' ? 'Time remaining: ' + Math.floor(sessionTime / 60) + ' minutes' : ''}`)
             } else {
               console.log('⚠️ No active session found, but unlock command received')
               // Still unlock if commanded but no session found

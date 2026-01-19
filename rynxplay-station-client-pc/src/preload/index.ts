@@ -59,12 +59,18 @@ const api = {
   unlockScreen: (): Promise<boolean> => ipcRenderer.invoke('unlock-screen'),
   getLockStatus: (): Promise<boolean> => ipcRenderer.invoke('get-lock-status'),
 
+  // Floating timer
+  updateFloatingTimer: (time: number, sessionType: 'guest' | 'member'): Promise<boolean> =>
+    ipcRenderer.invoke('update-floating-timer', time, sessionType),
+  showFloatingTimer: (): Promise<boolean> => ipcRenderer.invoke('show-floating-timer'),
+  hideFloatingTimer: (): Promise<boolean> => ipcRenderer.invoke('hide-floating-timer'),
+
   // System commands
   executeCommand: (command: string): Promise<boolean> => 
     ipcRenderer.invoke('execute-command', command),
   showMessage: (message: string): Promise<boolean> => 
     ipcRenderer.invoke('show-message', message),
-  quitApp: (): Promise<boolean> => ipcRenderer.invoke('quit-app'),
+  quitApp: (killCode?: string): Promise<boolean> => ipcRenderer.invoke('quit-app', killCode),
 
   // System info (legacy)
   getSystemInfo: (): Promise<{
@@ -81,6 +87,11 @@ const api = {
 
   removeDisplayMessageListener: (): void => {
     ipcRenderer.removeAllListeners('display-message')
+  },
+
+  // Timer update listener (for floating window)
+  onTimerUpdate: (callback: (data: { time: number, sessionType: string }) => void): void => {
+    ipcRenderer.on('update-timer', (_event, data) => callback(data))
   }
 }
 

@@ -38,31 +38,50 @@ interface SystemSpecs {
   }
 }
 
-interface API {
+interface Api {
+  // Configuration
   getConfig: () => Promise<Record<string, unknown>>
   saveConfig: (config: Record<string, unknown>) => Promise<boolean>
+
+  // Device code & QR
   getDeviceCode: () => Promise<string>
   generateQRCode: (data: string) => Promise<string>
+
+  // System specs
   getSystemSpecs: () => Promise<SystemSpecs>
+
+  // Lock/Unlock
   lockScreen: () => Promise<boolean>
   unlockScreen: () => Promise<boolean>
   getLockStatus: () => Promise<boolean>
+
+  // Floating timer
+  updateFloatingTimer: (time: number, sessionType: 'guest' | 'member') => Promise<boolean>
+  showFloatingTimer: () => Promise<boolean>
+  hideFloatingTimer: () => Promise<boolean>
+
+  // System commands
   executeCommand: (command: string) => Promise<boolean>
   showMessage: (message: string) => Promise<boolean>
-  quitApp: () => Promise<boolean>
+  quitApp: (killCode?: string) => Promise<boolean>
+
+  // System info (legacy)
   getSystemInfo: () => Promise<{
     platform: string
     hostname: string
     arch: string
     version: string
   }>
+
+  // Event listeners
   onDisplayMessage: (callback: (message: string) => void) => void
   removeDisplayMessageListener: () => void
+  onTimerUpdate: (callback: (data: { time: number, sessionType: string }) => void) => void
 }
 
 declare global {
   interface Window {
     electron: ElectronAPI
-    api: API
+    api: Api
   }
 }
