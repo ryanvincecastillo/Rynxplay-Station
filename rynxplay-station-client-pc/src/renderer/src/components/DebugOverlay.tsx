@@ -1,10 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useAppStore } from '../stores/appStore'
 
 interface DebugLog {
   id: number
   time: string
-  type: 'info' | 'success' | 'error' | 'command'
+  type: 'info' | 'success' | 'error' | 'command' | 'terminal'
   message: string
 }
 
@@ -30,6 +30,11 @@ export function addDebugLog(type: DebugLog['type'], message: string) {
 export function DebugOverlay() {
   const [isVisible, setIsVisible] = useState(false)
   const [logs, setLogs] = useState<DebugLog[]>([])
+  const [terminalInput, setTerminalInput] = useState('')
+  const [terminalHistory, setTerminalHistory] = useState<string[]>([])
+  const [historyIndex, setHistoryIndex] = useState(-1)
+  const [isProcessing, setIsProcessing] = useState(false)
+  const terminalInputRef = useRef<HTMLInputElement>(null)
   const { device, channels, isSupabaseConfigured } = useAppStore()
 
   // Subscribe to debug logs
@@ -46,8 +51,6 @@ export function DebugOverlay() {
   // Toggle with Ctrl+Shift+L
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      
-      //handle if window key is pressed
       if (e.key === 'Meta') return
 
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'l') {
@@ -59,6 +62,109 @@ export function DebugOverlay() {
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
+
+  // Focus terminal input when panel opens
+  useEffect(() => {
+    if (isVisible && terminalInputRef.current) {
+      setTimeout(() => terminalInputRef.current?.focus(), 100)
+    }
+  }, [isVisible])
+
+  const addTerminalLog = (type: DebugLog['type'], message: string) => {
+    const log: DebugLog = {
+      id: logId++,
+      time: new Date().toLocaleTimeString(),
+      type,
+      message
+    }
+    debugLogs = [log, ...debugLogs].slice(0, 50)
+    setLogs([...debugLogs])
+  }
+
+  const handleTerminalSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    
+    const command = terminalInput.trim()
+    if (!command) return
+
+    // Add to history
+    setTerminalHistory(prev => [command, ...prev].slice(0, 20))
+    setHistoryIndex(-1)
+    setTerminalInput('')
+
+    // Log the command (masked if it looks like a kill code)
+    const maskedCommand = command.startsWith('RYNX-') ? '********' : command
+    addTerminalLog('terminal', `> ${maskedCommand}`)
+
+    // Process commands
+    if (command.toLowerCase() === 'help') {
+      addTerminalLog('info', 'Available commands:')
+      addTerminalLog('info', '  help     - Show this help')
+      addTerminalLog('info', '  status   - Show system status')
+      addTerminalLog('info', '  clear    - Clear terminal')
+      addTerminalLog('info', '  exit     - Exit with kill code')
+      addTerminalLog('info', '  <code>   - Enter kill code to exit')
+      return
+    }
+
+    if (command.toLowerCase() === 'clear') {
+      debugLogs = []
+      setLogs([])
+      return
+    }
+
+    if (command.toLowerCase() === 'status') {
+      addTerminalLog('info', `Device: ${device?.device_code || 'N/A'}`)
+      addTerminalLog('info', `Status: ${device?.status || 'Unknown'}`)
+      addTerminalLog('info', `Channels: ${channels.length} active`)
+      addTerminalLog('info', `Supabase: ${isSupabaseConfigured ? 'Connected' : 'Not configured'}`)
+      return
+    }
+
+    if (command.toLowerCase() === 'exit') {
+      addTerminalLog('info', 'Enter kill code to exit safely:')
+      return
+    }
+
+    // Try as kill code
+    setIsProcessing(true)
+    addTerminalLog('info', 'Verifying kill code...')
+
+    try {
+      const result = await window.api.quitApp(command)
+      if (result) {
+        addTerminalLog('success', '✓ Kill code accepted. Exiting...')
+        // App will quit
+      } else {
+        addTerminalLog('error', '✗ Invalid kill code')
+      }
+    } catch (error) {
+      addTerminalLog('error', `✗ Error: ${error}`)
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      if (historyIndex < terminalHistory.length - 1) {
+        const newIndex = historyIndex + 1
+        setHistoryIndex(newIndex)
+        setTerminalInput(terminalHistory[newIndex])
+      }
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      if (historyIndex > 0) {
+        const newIndex = historyIndex - 1
+        setHistoryIndex(newIndex)
+        setTerminalInput(terminalHistory[newIndex])
+      } else if (historyIndex === 0) {
+        setHistoryIndex(-1)
+        setTerminalInput('')
+      }
+    }
+  }
 
   if (!isVisible) {
     return (
@@ -78,6 +184,7 @@ export function DebugOverlay() {
       case 'success': return 'text-emerald-400'
       case 'error': return 'text-red-400'
       case 'command': return 'text-cyan-400'
+      case 'terminal': return 'text-amber-400'
       default: return 'text-slate-400'
     }
   }
@@ -87,13 +194,14 @@ export function DebugOverlay() {
       case 'success': return '✅'
       case 'error': return '❌'
       case 'command': return '🎮'
+      case 'terminal': return '💻'
       default: return '📡'
     }
   }
 
   return (
     <div className="fixed inset-4 z-[9999] pointer-events-none">
-      <div className="absolute right-0 top-0 w-96 max-h-[80vh] bg-slate-900/95 border border-slate-700 rounded-xl shadow-2xl pointer-events-auto overflow-hidden flex flex-col">
+      <div className="absolute right-0 top-0 w-[420px] max-h-[85vh] bg-slate-900/95 border border-slate-700 rounded-xl shadow-2xl pointer-events-auto overflow-hidden flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-3 border-b border-slate-700 bg-slate-800/50">
           <h3 className="text-sm font-bold text-slate-200">🐛 Debug Panel</h3>
@@ -151,7 +259,7 @@ export function DebugOverlay() {
         </div>
 
         {/* Logs Section */}
-        <div className="flex-1 overflow-y-auto p-3">
+        <div className="flex-1 overflow-y-auto p-3 min-h-[150px]">
           <div className="flex items-center justify-between mb-2">
             <h4 className="text-xs font-semibold text-slate-300">Event Log</h4>
             <button
@@ -180,10 +288,48 @@ export function DebugOverlay() {
           )}
         </div>
 
+        {/* Terminal Section */}
+        <div className="border-t border-slate-700 bg-slate-950">
+          <div className="p-2 border-b border-slate-800">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-slate-500">💻 Admin Terminal</span>
+              <span className="text-[10px] text-slate-600">|</span>
+              <span className="text-[10px] text-slate-600">Type 'help' for commands</span>
+            </div>
+          </div>
+          
+          <form onSubmit={handleTerminalSubmit} className="p-2">
+            <div className="flex items-center gap-2 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2">
+              <span className="text-emerald-400 font-mono text-sm">$</span>
+              <input
+                ref={terminalInputRef}
+                type="text"
+                value={terminalInput}
+                onChange={(e) => setTerminalInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={isProcessing ? 'Processing...' : 'Enter command or kill code...'}
+                disabled={isProcessing}
+                className="flex-1 bg-transparent text-slate-200 text-sm font-mono placeholder-slate-600 outline-none"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              {isProcessing && (
+                <div className="w-4 h-4 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+              )}
+            </div>
+          </form>
+          
+          <div className="px-3 pb-2">
+            <p className="text-[9px] text-slate-600">
+              ↑↓ History • Enter to execute • Kill code format: RYNX-XXXXXXXX-XXXX
+            </p>
+          </div>
+        </div>
+
         {/* Footer */}
         <div className="p-2 border-t border-slate-700 bg-slate-800/50">
           <p className="text-[10px] text-slate-500 text-center">
-            Press Ctrl+Shift+D for DevTools • Ctrl+Shift+L to toggle
+            Ctrl+Shift+D DevTools • Ctrl+Shift+L Toggle Panel
           </p>
         </div>
       </div>
