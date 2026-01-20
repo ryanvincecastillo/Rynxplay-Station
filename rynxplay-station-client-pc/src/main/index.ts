@@ -3,6 +3,7 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import Store from 'electron-store'
 import { exec } from 'child_process'
+import * as fs from 'fs'
 import * as si from 'systeminformation'
 import * as QRCode from 'qrcode'
 import { v4 as uuidv4 } from 'uuid'
@@ -82,21 +83,15 @@ let currentSessionType: 'guest' | 'member' | null = null
 // WINDOWS SYSTEM LOCKDOWN
 // ============================================
 
-// Disable Windows key via registry
+// Disable Windows key via registry (using reg.exe - more reliable)
 function disableWindowsKeyViaRegistry(): void {
   if (process.platform !== 'win32') return
 
-  const script = `
-    $path = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
-    if (!(Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
-    Set-ItemProperty -Path $path -Name "NoWinKeys" -Value 1 -Type DWord -Force
-  `
-  
-  exec(`powershell -Command "${script.replace(/\n/g, ' ')}"`, (error) => {
+  exec('reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer" /v NoWinKeys /t REG_DWORD /d 1 /f', (error) => {
     if (error) {
       console.error('Failed to disable Windows key:', error.message)
     } else {
-      console.log('✅ Windows key disabled')
+      console.log('✅ Windows key disabled via registry')
     }
   })
 }
@@ -104,29 +99,16 @@ function disableWindowsKeyViaRegistry(): void {
 function enableWindowsKeyViaRegistry(): void {
   if (process.platform !== 'win32') return
 
-  const script = `
-    $path = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
-    if (Test-Path $path) {
-      Remove-ItemProperty -Path $path -Name "NoWinKeys" -ErrorAction SilentlyContinue
-    }
-  `
-  
-  exec(`powershell -Command "${script.replace(/\n/g, ' ')}"`, (error) => {
-    if (!error) console.log('✅ Windows key enabled')
+  exec('reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer" /v NoWinKeys /f', (error) => {
+    if (!error) console.log('✅ Windows key enabled via registry')
   })
 }
 
-// Disable Task Manager
+// Disable Task Manager via registry
 function disableTaskManager(): void {
   if (process.platform !== 'win32') return
 
-  const script = `
-    $path = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
-    if (!(Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
-    Set-ItemProperty -Path $path -Name "DisableTaskMgr" -Value 1 -Type DWord -Force
-  `
-  
-  exec(`powershell -Command "${script.replace(/\n/g, ' ')}"`, (error) => {
+  exec('reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v DisableTaskMgr /t REG_DWORD /d 1 /f', (error) => {
     if (!error) console.log('✅ Task Manager disabled')
   })
 }
@@ -134,76 +116,57 @@ function disableTaskManager(): void {
 function enableTaskManager(): void {
   if (process.platform !== 'win32') return
 
-  const script = `
-    $path = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
-    if (Test-Path $path) {
-      Remove-ItemProperty -Path $path -Name "DisableTaskMgr" -ErrorAction SilentlyContinue
-    }
-  `
-  
-  exec(`powershell -Command "${script.replace(/\n/g, ' ')}"`, (error) => {
+  exec('reg delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v DisableTaskMgr /f', (error) => {
     if (!error) console.log('✅ Task Manager enabled')
   })
 }
 
 // Hide/Show Taskbar using Windows API
+let hideTaskbarScriptPath: string | null = null
+
 function hideTaskbar(): void {
   if (process.platform !== 'win32') return
 
-  const script = `
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class TaskbarHelper {
-    [DllImport("user32.dll")]
-    public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
-    [DllImport("user32.dll")]
-    public static extern int ShowWindow(IntPtr hwnd, int nCmdShow);
-    
-    public static void Hide() {
-        IntPtr hwnd = FindWindow("Shell_TrayWnd", null);
-        ShowWindow(hwnd, 0);
-        // Also hide the start button
-        IntPtr startBtn = FindWindow("Button", "Start");
-        ShowWindow(startBtn, 0);
-    }
-}
-"@
-[TaskbarHelper]::Hide()
-  `
+  // Create script file once
+  if (!hideTaskbarScriptPath) {
+    hideTaskbarScriptPath = join(app.getPath('temp'), 'rynx_hide_taskbar.ps1')
+    const scriptContent = `
+Add-Type -Name Win32 -Namespace Native -MemberDefinition @'
+[DllImport("user32.dll")] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+[DllImport("user32.dll")] public static extern int ShowWindow(IntPtr hwnd, int nCmdShow);
+'@
+$taskbar = [Native.Win32]::FindWindow("Shell_TrayWnd", $null)
+[Native.Win32]::ShowWindow($taskbar, 0)
+`
+    fs.writeFileSync(hideTaskbarScriptPath, scriptContent)
+  }
   
-  exec(`powershell -Command "${script.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`, (error) => {
-    if (!error) console.log('✅ Taskbar hidden')
-  })
+  exec(`powershell -ExecutionPolicy Bypass -File "${hideTaskbarScriptPath}"`, () => {})
 }
 
 function showTaskbar(): void {
   if (process.platform !== 'win32') return
 
-  const script = `
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class TaskbarHelper2 {
-    [DllImport("user32.dll")]
-    public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
-    [DllImport("user32.dll")]
-    public static extern int ShowWindow(IntPtr hwnd, int nCmdShow);
-    
-    public static void Show() {
-        IntPtr hwnd = FindWindow("Shell_TrayWnd", null);
-        ShowWindow(hwnd, 5);
-        IntPtr startBtn = FindWindow("Button", "Start");
-        ShowWindow(startBtn, 5);
-    }
-}
-"@
-[TaskbarHelper2]::Show()
-  `
+  const tempScript = join(app.getPath('temp'), 'rynx_show_taskbar.ps1')
+  const scriptContent = `
+Add-Type -Name Win32 -Namespace Native -MemberDefinition @'
+[DllImport("user32.dll")] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+[DllImport("user32.dll")] public static extern int ShowWindow(IntPtr hwnd, int nCmdShow);
+'@
+$taskbar = [Native.Win32]::FindWindow("Shell_TrayWnd", $null)
+[Native.Win32]::ShowWindow($taskbar, 5)
+`
   
-  exec(`powershell -Command "${script.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`, (error) => {
+  fs.writeFileSync(tempScript, scriptContent)
+  exec(`powershell -ExecutionPolicy Bypass -File "${tempScript}"`, (error) => {
     if (!error) console.log('✅ Taskbar shown')
   })
+  
+  // Cleanup the hide script
+  if (hideTaskbarScriptPath) {
+    try { fs.unlinkSync(hideTaskbarScriptPath) } catch {}
+    hideTaskbarScriptPath = null
+  }
 }
 
 // Register global shortcuts as additional protection
@@ -251,16 +214,31 @@ function unregisterGlobalShortcuts(): void {
 }
 
 // Combined lockdown functions
+let taskbarHideInterval: NodeJS.Timeout | null = null
+
 function enableLockdownMode(): void {
   console.log('🔒 Enabling lockdown mode...')
   disableWindowsKeyViaRegistry()
   disableTaskManager()
   hideTaskbar()
   registerGlobalShortcuts()
+  
+  // Periodically hide taskbar in case it reappears (e.g., when Windows key is pressed)
+  if (taskbarHideInterval) clearInterval(taskbarHideInterval)
+  taskbarHideInterval = setInterval(() => {
+    if (isLocked) hideTaskbar()
+  }, 1000)
 }
 
 function disableLockdownMode(): void {
   console.log('🔓 Disabling lockdown mode...')
+  
+  // Stop periodic taskbar hiding
+  if (taskbarHideInterval) {
+    clearInterval(taskbarHideInterval)
+    taskbarHideInterval = null
+  }
+  
   enableWindowsKeyViaRegistry()
   enableTaskManager()
   showTaskbar()
