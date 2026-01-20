@@ -31,16 +31,15 @@ import {
   subscribeToDevices,
   subscribeToSessions,
   unsubscribe,
-  signOut as supabaseSignOut
+  signOut as supabaseSignOut,
+  startDeviceStatusPolling,
+  stopDeviceStatusPolling,
+  startActiveSessionsPolling,
+  stopActiveSessionsPolling,
+  getEffectiveDeviceStatus
 } from '@/lib/supabase'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { generateId } from '@/lib/utils'
-
-interface AddToastOptions {
-  type: ToastType
-  message: string
-  duration?: number
-}
 
 interface AppStore {
   // Auth state
@@ -89,12 +88,15 @@ interface AppStore {
   // UI actions
   toggleSidebar: () => void
   setCurrentBranch: (branch: Branch | null) => void
-  addToast: (options: AddToastOptions) => void
+  addToast: (type: ToastType, message: string, duration?: number) => void
   removeToast: (id: string) => void
   
   // Realtime
   setupRealtimeSubscriptions: () => void
   cleanup: () => void
+  
+  // Device helpers
+  getDeviceEffectiveStatus: (device: Device) => Device['status']
 }
 
 export const useAppStore = create<AppStore>((set, get) => ({
@@ -273,7 +275,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ currentBranch: branch })
   },
   
-  addToast: ({ type, message, duration = 5000 }) => {
+  addToast: (type, message, duration = 5000) => {
     const id = generateId()
     const toast: Toast = { id, type, message, duration }
     
@@ -291,39 +293,60 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
   
   setupRealtimeSubscriptions: () => {
+    const { organization } = get()
+    if (!organization) return
+    
     const channels: RealtimeChannel[] = []
     
-    // Subscribe to device changes
+    // Subscribe to device changes (realtime)
     const deviceChannel = subscribeToDevices((payload) => {
       console.log('Device change:', payload.eventType)
-      if (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT' || payload.eventType === 'DELETE') {
-        get().fetchDevices()
-        get().fetchPendingDevices()
-        get().fetchStats()
-      }
+      // Fetch fresh data on any change
+      get().fetchDevices()
+      get().fetchPendingDevices()
+      get().fetchStats()
     })
     channels.push(deviceChannel)
     
-    // Subscribe to session changes - fetch BOTH sessions and activeSessions
+    // Subscribe to session changes (realtime)
     const sessionChannel = subscribeToSessions((payload) => {
       console.log('Session change:', payload.eventType, payload.new?.status)
-      if (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT' || payload.eventType === 'DELETE') {
-        // Fetch both sessions list and active sessions
-        get().fetchSessions()
-        get().fetchActiveSessions()
-        get().fetchStats()
-        // Also refresh devices since session changes affect device status
-        get().fetchDevices()
-      }
+      // Fetch fresh data on any change
+      get().fetchSessions()
+      get().fetchActiveSessions()
+      get().fetchStats()
+      get().fetchDevices() // Device status may change with session
     })
     channels.push(sessionChannel)
     
     set({ channels })
+    
+    // Start polling for device status (heartbeat checks) - every 10 seconds
+    startDeviceStatusPolling(organization.id, (devices) => {
+      set({ devices })
+    }, 10000)
+    
+    // Start polling for active sessions (timer updates) - every 5 seconds
+    startActiveSessionsPolling(organization.id, (activeSessions) => {
+      set({ activeSessions })
+    }, 5000)
   },
   
   cleanup: () => {
     const { channels } = get()
+    
+    // Unsubscribe from all channels
     channels.forEach(channel => unsubscribe(channel))
+    
+    // Stop polling
+    stopDeviceStatusPolling()
+    stopActiveSessionsPolling()
+    
     set({ channels: [] })
+  },
+  
+  // Helper to get effective device status based on heartbeat
+  getDeviceEffectiveStatus: (device) => {
+    return getEffectiveDeviceStatus(device)
   }
 }))

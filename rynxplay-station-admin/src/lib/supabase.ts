@@ -16,6 +16,9 @@ import type {
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY
 
+// Heartbeat timeout - device is considered offline if no heartbeat for this duration
+const HEARTBEAT_TIMEOUT_MS = 45000 // 45 seconds
+
 let supabaseClient: SupabaseClient | null = null
 
 export function initSupabase(): SupabaseClient {
@@ -168,7 +171,32 @@ export async function getDevices(orgId: string): Promise<Device[]> {
     return []
   }
   
-  return data || []
+  // Check heartbeat status and update effective status
+  const devicesWithStatus = (data || []).map(device => ({
+    ...device,
+    effective_status: getEffectiveDeviceStatus(device)
+  }))
+  
+  return devicesWithStatus
+}
+
+// Helper to determine effective device status based on heartbeat
+export function getEffectiveDeviceStatus(device: Device): Device['status'] {
+  if (!device.last_heartbeat) {
+    return 'offline'
+  }
+  
+  const lastHeartbeat = new Date(device.last_heartbeat).getTime()
+  const now = Date.now()
+  const timeSinceHeartbeat = now - lastHeartbeat
+  
+  // If heartbeat is stale, device is offline
+  if (timeSinceHeartbeat > HEARTBEAT_TIMEOUT_MS) {
+    return 'offline'
+  }
+  
+  // Otherwise use the device's reported status
+  return device.status
 }
 
 export async function getPendingDevices(): Promise<Device[]> {
@@ -381,17 +409,12 @@ export async function getMembers(orgId: string): Promise<Member[]> {
   return data || []
 }
 
-export async function createMember(orgId: string, member: Partial<Member>): Promise<Member | null> {
+export async function createMember(member: Partial<Member>): Promise<Member | null> {
   const supabase = getSupabase()
   
   const { data, error } = await supabase
     .from('members')
-    .insert({
-      ...member,
-      org_id: orgId,
-      credits: 0,
-      is_active: true
-    })
+    .insert(member)
     .select()
     .single()
   
@@ -425,13 +448,12 @@ export async function updateMember(id: string, updates: Partial<Member>): Promis
 export async function addMemberCredits(
   memberId: string,
   amount: number,
-  branchId?: string,
-  paymentMethod: string = 'cash',
+  branchId: string,
+  paymentMethod: string,
   createdBy?: string
 ): Promise<boolean> {
   const supabase = getSupabase()
   
-  // Get current balance
   const { data: member, error: memberError } = await supabase
     .from('members')
     .select('credits')
@@ -445,13 +467,9 @@ export async function addMemberCredits(
   
   const newBalance = member.credits + amount
   
-  // Update member credits
   const { error: updateError } = await supabase
     .from('members')
-    .update({ 
-      credits: newBalance,
-      updated_at: new Date().toISOString()
-    })
+    .update({ credits: newBalance })
     .eq('id', memberId)
   
   if (updateError) {
@@ -459,24 +477,21 @@ export async function addMemberCredits(
     return false
   }
   
-  // Create transaction record if branch is provided
-  if (branchId) {
-    const { error: txError } = await supabase
-      .from('transactions')
-      .insert({
-        member_id: memberId,
-        branch_id: branchId,
-        type: 'topup',
-        amount: amount,
-        balance_before: member.credits,
-        balance_after: newBalance,
-        payment_method: paymentMethod,
-        created_by: createdBy
-      })
-    
-    if (txError) {
-      console.error('Error creating transaction:', txError)
-    }
+  const { error: txError } = await supabase
+    .from('transactions')
+    .insert({
+      member_id: memberId,
+      branch_id: branchId,
+      type: 'topup',
+      amount: amount,
+      balance_before: member.credits,
+      balance_after: newBalance,
+      payment_method: paymentMethod,
+      created_by: createdBy
+    })
+  
+  if (txError) {
+    console.error('Error creating transaction:', txError)
   }
   
   return true
@@ -519,72 +534,38 @@ export async function getActiveSessions(orgId: string): Promise<Session[]> {
   return data || []
 }
 
-// End session - updates session, device status, and sends lock command
-export async function endSession(
-  sessionId: string,
-  totalSecondsUsed?: number,
-  totalAmount?: number
-): Promise<boolean> {
+export async function getSessionById(sessionId: string): Promise<Session | null> {
   const supabase = getSupabase()
   
-  // First get the session to know the device ID
-  const { data: session, error: sessionError } = await supabase
+  const { data, error } = await supabase
     .from('sessions')
-    .select('*, devices(*)')
+    .select('*, members(*), devices(*), rates(*)')
     .eq('id', sessionId)
     .single()
   
-  if (sessionError || !session) {
-    console.error('Error getting session:', sessionError)
-    return false
+  if (error) {
+    console.error('Error getting session:', error)
+    return null
   }
   
-  // Update session status
-  const updateData: Record<string, unknown> = {
-    status: 'terminated',
-    ended_at: new Date().toISOString()
-  }
+  return data
+}
+
+export async function endSession(sessionId: string): Promise<boolean> {
+  const supabase = getSupabase()
   
-  if (totalSecondsUsed !== undefined) {
-    updateData.total_seconds_used = totalSecondsUsed
-  }
-  if (totalAmount !== undefined) {
-    updateData.total_amount = totalAmount
-  }
-  
-  const { error: updateError } = await supabase
+  const { error } = await supabase
     .from('sessions')
-    .update(updateData)
+    .update({
+      status: 'terminated',
+      ended_at: new Date().toISOString()
+    })
     .eq('id', sessionId)
   
-  if (updateError) {
-    console.error('Error ending session:', updateError)
+  if (error) {
+    console.error('Error ending session:', error)
     return false
   }
-  
-  // Update device status to online and locked
-  const { error: deviceError } = await supabase
-    .from('devices')
-    .update({
-      status: 'online',
-      is_locked: true,
-      current_session_id: null,
-      updated_at: new Date().toISOString()
-    })
-    .eq('id', session.device_id)
-  
-  if (deviceError) {
-    console.error('Error updating device status:', deviceError)
-  }
-  
-  // Send lock command to device
-  await supabase
-    .from('device_commands')
-    .insert({
-      device_id: session.device_id,
-      command_type: 'lock',
-      payload: { reason: 'Session ended by admin' }
-    })
   
   return true
 }
@@ -616,31 +597,26 @@ export async function getDashboardStats(orgId: string): Promise<DashboardStats> 
   today.setHours(0, 0, 0, 0)
   
   try {
-    // Get device counts
     const { data: devices } = await supabase
       .from('devices')
-      .select('status, branches!inner(org_id)')
+      .select('status, last_heartbeat, branches!inner(org_id)')
       .eq('branches.org_id', orgId)
     
-    // Get pending devices (no branch assigned)
     const { data: pendingDevices } = await supabase
       .from('devices')
       .select('id')
       .is('branch_id', null)
     
-    // Get member counts
     const { data: members } = await supabase
       .from('members')
       .select('is_active')
       .eq('org_id', orgId)
     
-    // Get session counts
     const { data: sessions } = await supabase
       .from('sessions')
       .select('status, devices!inner(branches!inner(org_id))')
       .eq('devices.branches.org_id', orgId)
     
-    // Get today's revenue
     const { data: todayTransactions } = await supabase
       .from('transactions')
       .select('amount, type, branches!inner(org_id)')
@@ -649,7 +625,14 @@ export async function getDashboardStats(orgId: string): Promise<DashboardStats> 
       .gte('created_at', today.toISOString())
     
     const totalDevices = devices?.length || 0
-    const activeDevices = devices?.filter(d => d.status === 'in_use' || d.status === 'online').length || 0
+    
+    // Count active devices based on heartbeat
+    const activeDevices = devices?.filter(d => {
+      if (!d.last_heartbeat) return false
+      const timeSinceHeartbeat = Date.now() - new Date(d.last_heartbeat).getTime()
+      return timeSinceHeartbeat <= HEARTBEAT_TIMEOUT_MS && (d.status === 'in_use' || d.status === 'online')
+    }).length || 0
+    
     const totalMembers = members?.length || 0
     const activeMembers = members?.filter(m => m.is_active).length || 0
     const totalSessions = sessions?.length || 0
@@ -682,7 +665,10 @@ export async function getDashboardStats(orgId: string): Promise<DashboardStats> 
   }
 }
 
-// Realtime subscriptions
+// ============================================
+// REALTIME SUBSCRIPTIONS
+// ============================================
+
 export function subscribeToDevices(
   callback: (payload: { eventType: string; new: Device; old: Device }) => void
 ): RealtimeChannel {
@@ -698,10 +684,13 @@ export function subscribeToDevices(
         table: 'devices'
       },
       (payload) => {
+        console.log('📡 Device realtime update:', payload.eventType)
         callback(payload as unknown as { eventType: string; new: Device; old: Device })
       }
     )
-    .subscribe()
+    .subscribe((status) => {
+      console.log('Devices subscription status:', status)
+    })
 }
 
 export function subscribeToSessions(
@@ -719,7 +708,36 @@ export function subscribeToSessions(
         table: 'sessions'
       },
       (payload) => {
+        console.log('📡 Session realtime update:', payload.eventType, (payload.new as Session)?.status)
         callback(payload as unknown as { eventType: string; new: Session; old: Session })
+      }
+    )
+    .subscribe((status) => {
+      console.log('Sessions subscription status:', status)
+    })
+}
+
+// Subscribe to a specific session for time updates
+export function subscribeToSessionTime(
+  sessionId: string,
+  callback: (session: Session) => void
+): RealtimeChannel {
+  const supabase = getSupabase()
+  
+  return supabase
+    .channel(`session-time-${sessionId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'sessions',
+        filter: `id=eq.${sessionId}`
+      },
+      async (payload) => {
+        const session = payload.new as Session
+        console.log('⏱️ Session time update:', session.time_remaining_seconds, session.total_seconds_used)
+        callback(session)
       }
     )
     .subscribe()
@@ -728,4 +746,72 @@ export function subscribeToSessions(
 export function unsubscribe(channel: RealtimeChannel): void {
   const supabase = getSupabase()
   supabase.removeChannel(channel)
+}
+
+// ============================================
+// DEVICE STATUS POLLING (for heartbeat checking)
+// ============================================
+
+let deviceStatusInterval: ReturnType<typeof setInterval> | null = null
+
+export function startDeviceStatusPolling(
+  orgId: string,
+  onDevicesUpdate: (devices: Device[]) => void,
+  intervalMs: number = 10000 // Check every 10 seconds
+): void {
+  console.log('🔄 Starting device status polling...')
+  
+  if (deviceStatusInterval) {
+    clearInterval(deviceStatusInterval)
+  }
+  
+  // Initial fetch
+  getDevices(orgId).then(onDevicesUpdate)
+  
+  deviceStatusInterval = setInterval(async () => {
+    const devices = await getDevices(orgId)
+    onDevicesUpdate(devices)
+  }, intervalMs)
+}
+
+export function stopDeviceStatusPolling(): void {
+  if (deviceStatusInterval) {
+    clearInterval(deviceStatusInterval)
+    deviceStatusInterval = null
+    console.log('Device status polling stopped')
+  }
+}
+
+// ============================================
+// ACTIVE SESSIONS POLLING (for time updates)
+// ============================================
+
+let activeSessionsInterval: ReturnType<typeof setInterval> | null = null
+
+export function startActiveSessionsPolling(
+  orgId: string,
+  onSessionsUpdate: (sessions: Session[]) => void,
+  intervalMs: number = 5000 // Check every 5 seconds
+): void {
+  console.log('🔄 Starting active sessions polling...')
+  
+  if (activeSessionsInterval) {
+    clearInterval(activeSessionsInterval)
+  }
+  
+  // Initial fetch
+  getActiveSessions(orgId).then(onSessionsUpdate)
+  
+  activeSessionsInterval = setInterval(async () => {
+    const sessions = await getActiveSessions(orgId)
+    onSessionsUpdate(sessions)
+  }, intervalMs)
+}
+
+export function stopActiveSessionsPolling(): void {
+  if (activeSessionsInterval) {
+    clearInterval(activeSessionsInterval)
+    activeSessionsInterval = null
+    console.log('Active sessions polling stopped')
+  }
 }

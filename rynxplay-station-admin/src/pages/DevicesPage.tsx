@@ -22,10 +22,16 @@ export function DevicesPage() {
     pendingDevices, 
     branches, 
     staff,
+    activeSessions,
     fetchDevices, 
     fetchPendingDevices,
     addToast 
   } = useAppStore()
+  
+  // Helper to find active session for a device
+  const getActiveSessionForDevice = (deviceId: string) => {
+    return activeSessions.find(s => s.device_id === deviceId && s.status === 'active')
+  }
   
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
   const [searchQuery, setSearchQuery] = useState('')
@@ -284,6 +290,7 @@ export function DevicesPage() {
                 <DeviceCard
                   key={device.id}
                   device={device}
+                  activeSession={getActiveSessionForDevice(device.id)}
                   onCommand={(cmd) => handleCommand(device, cmd)}
                   onViewDetails={() => openDetailsModal(device)}
                 />
