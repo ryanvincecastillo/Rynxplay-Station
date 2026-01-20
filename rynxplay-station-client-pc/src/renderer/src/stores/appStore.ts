@@ -491,10 +491,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
   decrementTimer: () => {
     const { session, timeRemaining, totalSecondsUsed } = get()
     
-    if (!session || session.status !== 'active') return
+    // Debug logging
+    if (!session) {
+      console.log('⏱️ decrementTimer: No session')
+      return
+    }
+    
+    if (session.status !== 'active') {
+      console.log('⏱️ decrementTimer: Session not active, status:', session.status)
+      return
+    }
     
     const newTimeRemaining = Math.max(0, timeRemaining - 1)
     const newTotalSeconds = totalSecondsUsed + 1
+    
+    // Log every 10 seconds to avoid spam
+    if (newTotalSeconds % 10 === 0) {
+      console.log(`⏱️ Timer tick: ${newTimeRemaining}s remaining, ${newTotalSeconds}s used`)
+    }
     
     set({
       timeRemaining: newTimeRemaining,
@@ -597,8 +611,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
             
             if (activeSession) {
               console.log('✅ Found active session:', activeSession.id)
+              console.log('📋 Session details:', {
+                id: activeSession.id,
+                status: activeSession.status,
+                session_type: activeSession.session_type,
+                time_remaining_seconds: activeSession.time_remaining_seconds,
+                total_seconds_used: activeSession.total_seconds_used
+              })
               
               const sessionTime = activeSession.time_remaining_seconds || timeRemaining
+              
+              console.log('⏱️ Setting timeRemaining to:', sessionTime)
               
               set({
                 session: activeSession,
@@ -607,6 +630,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
                 totalSecondsUsed: activeSession.total_seconds_used || 0,
                 screen: 'session',
                 isLocked: false
+              })
+              
+              // Verify state was set correctly
+              const newState = get()
+              console.log('✅ State after set:', {
+                hasSession: !!newState.session,
+                sessionStatus: newState.session?.status,
+                timeRemaining: newState.timeRemaining,
+                totalSecondsUsed: newState.totalSecondsUsed,
+                screen: newState.screen
               })
               
               await window.api.unlockScreen()

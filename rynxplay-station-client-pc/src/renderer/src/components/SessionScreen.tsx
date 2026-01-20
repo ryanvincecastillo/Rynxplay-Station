@@ -18,12 +18,14 @@ export function SessionScreen() {
   const [showEndConfirm, setShowEndConfirm] = useState(false)
   
   // Use refs for stable references
-  const timerRef = useRef<NodeJS.Timeout | null>(null)
-  const chargeIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const chargeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  
+  // Store the decrementTimer in a ref to avoid stale closures
   const decrementTimerRef = useRef(decrementTimer)
   const chargeCreditsRef = useRef(chargeCredits)
   
-  // Keep refs updated
+  // Keep refs updated with latest functions
   useEffect(() => {
     decrementTimerRef.current = decrementTimer
   }, [decrementTimer])
@@ -33,37 +35,54 @@ export function SessionScreen() {
   }, [chargeCredits])
 
   // Extract stable values for dependency tracking
+  const sessionId = session?.id
   const sessionStatus = session?.status
   const sessionType = session?.session_type
-  const isSessionActive = sessionStatus === 'active'
+
+  // Debug: Log session state changes
+  useEffect(() => {
+    console.log('🔍 SessionScreen state:', {
+      sessionId,
+      sessionStatus,
+      sessionType,
+      timeRemaining,
+      totalSecondsUsed
+    })
+  }, [sessionId, sessionStatus, sessionType, timeRemaining, totalSecondsUsed])
 
   // Timer countdown - runs for ALL active sessions
   useEffect(() => {
-    // Clear any existing timer
+    console.log('⏱️ Timer effect triggered, sessionStatus:', sessionStatus)
+    
+    // Always clear existing timer first
     if (timerRef.current) {
+      console.log('⏱️ Clearing existing timer')
       clearInterval(timerRef.current)
       timerRef.current = null
     }
     
-    if (!isSessionActive) {
-      console.log('⏱️ Timer not started - session not active')
+    // Only start timer if session is active
+    if (sessionStatus !== 'active') {
+      console.log('⏱️ Timer not started - sessionStatus is:', sessionStatus)
       return
     }
     
-    console.log('⏱️ Starting countdown timer')
+    console.log('⏱️ Starting new countdown timer interval')
     
+    // Create the interval
     timerRef.current = setInterval(() => {
       decrementTimerRef.current()
     }, 1000)
     
+    // Cleanup function
     return () => {
+      console.log('⏱️ Timer cleanup called')
       if (timerRef.current) {
-        console.log('⏱️ Cleaning up timer')
         clearInterval(timerRef.current)
         timerRef.current = null
       }
     }
-  }, [isSessionActive]) // Only depend on whether session is active
+  }, [sessionStatus]) // Only re-run when session status changes
 
   // Credit charging for member sessions (every 60 seconds)
   useEffect(() => {
@@ -73,7 +92,7 @@ export function SessionScreen() {
       chargeIntervalRef.current = null
     }
     
-    if (!isSessionActive || sessionType !== 'member') {
+    if (sessionStatus !== 'active' || sessionType !== 'member') {
       return
     }
     
@@ -90,7 +109,7 @@ export function SessionScreen() {
         chargeIntervalRef.current = null
       }
     }
-  }, [isSessionActive, sessionType]) // Only depend on session status and type
+  }, [sessionStatus, sessionType])
 
   const formatTime = (seconds: number): string => {
     if (seconds <= 0) return '00:00:00'

@@ -193,6 +193,8 @@ export async function sendHeartbeat(deviceId: string): Promise<boolean> {
 export async function getActiveSession(deviceId: string): Promise<Session | null> {
   const supabase = getSupabase()
   
+  debugLog('info', `Fetching active session for device: ${deviceId.slice(0, 8)}...`)
+  
   const { data, error } = await supabase
     .from('sessions')
     .select('*, members(*), rates(*)')
@@ -205,6 +207,13 @@ export async function getActiveSession(deviceId: string): Promise<Session | null
   if (error && error.code !== 'PGRST116') {
     console.error('Error getting active session:', error)
     return null
+  }
+
+  if (data) {
+    debugLog('success', `Active session found: ${data.id}, status: ${data.status}, type: ${data.session_type}`)
+    debugLog('info', `Session time_remaining: ${data.time_remaining_seconds}, total_used: ${data.total_seconds_used}`)
+  } else {
+    debugLog('info', 'No active session found')
   }
 
   return data
