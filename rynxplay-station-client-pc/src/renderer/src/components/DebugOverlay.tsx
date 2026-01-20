@@ -98,12 +98,13 @@ export function DebugOverlay() {
 
     // Process commands
     if (command.toLowerCase() === 'help') {
-      addTerminalLog('info', 'Available commands:')
+      addTerminalLog('info', '═══ Available Commands ═══')
       addTerminalLog('info', '  help     - Show this help')
       addTerminalLog('info', '  status   - Show system status')
       addTerminalLog('info', '  clear    - Clear terminal')
-      addTerminalLog('info', '  exit     - Exit with kill code')
-      addTerminalLog('info', '  <code>   - Enter kill code to exit')
+      addTerminalLog('info', '═══ To Exit App ═══')
+      addTerminalLog('info', '  Type: RYNX-ADMIN-EXIT-2024')
+      addTerminalLog('info', '  (This is the default kill code)')
       return
     }
 
@@ -121,26 +122,27 @@ export function DebugOverlay() {
       return
     }
 
-    if (command.toLowerCase() === 'exit') {
-      addTerminalLog('info', 'Enter kill code to exit safely:')
-      return
-    }
-
-    // Try as kill code
+    // Try as kill code (any input that's not a recognized command)
     setIsProcessing(true)
-    addTerminalLog('info', 'Verifying kill code...')
+    addTerminalLog('info', '🔐 Verifying kill code...')
 
     try {
       const result = await window.api.quitApp(command)
       if (result) {
-        addTerminalLog('success', '✓ Kill code accepted. Exiting...')
-        // App will quit
+        addTerminalLog('success', '✓ Kill code accepted!')
+        addTerminalLog('success', '✓ Exiting application...')
+        // App should quit now, but add a fallback message
+        setTimeout(() => {
+          addTerminalLog('error', '⚠ If app did not close, try restarting')
+          setIsProcessing(false)
+        }, 3000)
       } else {
         addTerminalLog('error', '✗ Invalid kill code')
+        addTerminalLog('info', '💡 Try: RYNX-ADMIN-EXIT-2024')
+        setIsProcessing(false)
       }
     } catch (error) {
       addTerminalLog('error', `✗ Error: ${error}`)
-    } finally {
       setIsProcessing(false)
     }
   }
@@ -307,7 +309,7 @@ export function DebugOverlay() {
                 value={terminalInput}
                 onChange={(e) => setTerminalInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={isProcessing ? 'Processing...' : 'Enter command or kill code...'}
+                placeholder={isProcessing ? 'Processing...' : 'Enter kill code to exit...'}
                 disabled={isProcessing}
                 className="flex-1 bg-transparent text-slate-200 text-sm font-mono placeholder-slate-600 outline-none"
                 autoComplete="off"
@@ -319,9 +321,12 @@ export function DebugOverlay() {
             </div>
           </form>
           
-          <div className="px-3 pb-2">
+          <div className="px-3 pb-2 space-y-1">
             <p className="text-[9px] text-slate-600">
-              ↑↓ History • Enter to execute • Kill code format: RYNX-XXXXXXXX-XXXX
+              ↑↓ History • Enter to execute
+            </p>
+            <p className="text-[9px] text-amber-500/70">
+              💡 Default kill code: RYNX-ADMIN-EXIT-2024
             </p>
           </div>
         </div>

@@ -459,12 +459,43 @@ function safeExit(): void {
   console.log('🛑 Safe exit initiated...')
   isAuthorizedExit = true
   isQuitting = true
+  isLocked = false  // Unlock first so close handlers don't block
   
-  disableLockdownMode()
+  // Stop all intervals
+  if (taskbarHideInterval) {
+    clearInterval(taskbarHideInterval)
+    taskbarHideInterval = null
+  }
+  if (startMenuMonitorInterval) {
+    clearInterval(startMenuMonitorInterval)
+    startMenuMonitorInterval = null
+  }
   
+  // Stop keyboard hook
+  stopKeyboardHook()
+  
+  // Restore system settings
+  enableWindowsKeyViaRegistry()
+  enableTaskManager()
+  showTaskbar()
+  unregisterGlobalShortcuts()
+  
+  // Close all windows
+  if (floatingWindow) {
+    floatingWindow.destroy()
+    floatingWindow = null
+  }
+  
+  if (mainWindow) {
+    mainWindow.destroy()
+    mainWindow = null
+  }
+  
+  // Force quit after a short delay
   setTimeout(() => {
-    app.quit()
-  }, 500)
+    console.log('🛑 Calling app.exit()...')
+    app.exit(0)  // Force exit without triggering quit handlers
+  }, 300)
 }
 
 function rebootSystem(): void {
@@ -998,10 +1029,17 @@ function setupIpcHandlers(): void {
   })
 
   ipcMain.handle('quit-app', (_event, killCode?: string) => {
-    if (killCode === ADMIN_KILL_CODE) {
+    const trimmedCode = killCode?.trim()
+    console.log(`🔑 Quit requested with code: ${trimmedCode ? '***' : 'none'}`)
+    console.log(`🔑 Expected code: ${ADMIN_KILL_CODE}`)
+    console.log(`🔑 Match: ${trimmedCode === ADMIN_KILL_CODE}`)
+    
+    if (trimmedCode === ADMIN_KILL_CODE) {
+      console.log('✅ Kill code verified, initiating safe exit...')
       safeExit()
       return true
     }
+    console.log('❌ Kill code mismatch')
     return false
   })
 
