@@ -446,21 +446,24 @@ export async function markCommandExecuted(
 ): Promise<boolean> {
   const supabase = getSupabase()
   
+  debugLog('info', `Marking command ${commandId} as ${success ? 'executed' : 'failed'}`)
+  
   const { error } = await supabase
     .from('device_commands')
     .update({
+      status: success ? 'executed' : 'failed',
       executed_at: new Date().toISOString(),
-      success,
-      error_message: errorMessage
+      error_message: errorMessage || null
     })
     .eq('id', commandId)
 
   if (error) {
     console.error('Error marking command executed:', error)
+    debugLog('error', `Failed to mark command: ${error.message}`)
     return false
   }
 
-  debugLog('success', `Command executed: ${success ? 'success' : 'failed'}`)
+  debugLog('success', `Command ${commandId} marked as ${success ? 'executed' : 'failed'}`)
   return true
 }
 

@@ -18,15 +18,24 @@ export function SessionScreen() {
   
   // Ref to track if timer is running
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const isTimerRunning = useRef(false)
+
+  // Debug: Log session object on every render
+  console.log('🔍 SessionScreen RENDER - session:', JSON.stringify(session, null, 2))
 
   // Initialize timer when session loads or changes
   useEffect(() => {
-    if (session && session.status === 'active') {
+    console.log('📋 Session useEffect triggered')
+    console.log('📋 session?.id:', session?.id)
+    console.log('📋 session?.status:', session?.status)
+    console.log('📋 session?.session_type:', session?.session_type)
+    console.log('📋 session?.time_remaining_seconds:', session?.time_remaining_seconds)
+    
+    if (session) {
       const initialTime = session.time_remaining_seconds || 0
       const initialElapsed = session.total_seconds_used || 0
       
-      console.log('📋 Initializing session timer:', {
-        type: session.session_type,
+      console.log('📋 Setting initial timer values:', {
         timeRemaining: initialTime,
         elapsed: initialElapsed
       })
@@ -36,31 +45,53 @@ export function SessionScreen() {
     }
   }, [session?.id])
 
-  // THE TIMER - Simple and bulletproof
+  // THE TIMER
   useEffect(() => {
+    console.log('⏱️ Timer useEffect triggered')
+    console.log('⏱️ session exists:', !!session)
+    console.log('⏱️ session?.status:', session?.status)
+    console.log('⏱️ isTimerRunning:', isTimerRunning.current)
+    
     // Clear existing timer
     if (timerRef.current) {
+      console.log('⏱️ Clearing existing timer')
       clearInterval(timerRef.current)
       timerRef.current = null
+      isTimerRunning.current = false
     }
 
-    // Only run if session is active
-    if (!session || session.status !== 'active') {
-      console.log('⏱️ Timer not started - no active session')
+    // Check if we should start timer
+    if (!session) {
+      console.log('❌ Timer NOT started - session is null/undefined')
+      return
+    }
+    
+    if (session.status !== 'active') {
+      console.log('❌ Timer NOT started - session.status is:', session.status, '(expected: active)')
       return
     }
 
-    console.log('⏱️ Starting timer...')
+    console.log('✅ Starting timer for', session.session_type, 'session')
+    isTimerRunning.current = true
 
     timerRef.current = setInterval(() => {
+      if (!isTimerRunning.current) {
+        console.log('⏱️ Timer tick but isTimerRunning is false, skipping')
+        return
+      }
+      
       // Increment elapsed time
       setElapsedTime(prev => {
         const newElapsed = prev + 1
         
+        // Log every 5 seconds
+        if (newElapsed % 5 === 0) {
+          console.log(`⏱️ TICK - Elapsed: ${newElapsed}s`)
+        }
+        
         // Sync to store every 10 seconds
         if (newElapsed % 10 === 0) {
           useAppStore.setState({ totalSecondsUsed: newElapsed })
-          console.log(`⏱️ Elapsed: ${newElapsed}s`)
         }
         
         return newElapsed
@@ -71,17 +102,25 @@ export function SessionScreen() {
         setTimeRemaining(prev => {
           const newTime = prev - 1
           
+          // Log every 5 seconds
+          if (Math.abs(newTime) % 5 === 0) {
+            console.log(`⏱️ TICK - Time remaining: ${newTime}s`)
+          }
+          
           // Update floating timer
-          window.api?.updateFloatingTimer?.(Math.max(0, newTime), 'guest')
+          if (window.api?.updateFloatingTimer) {
+            window.api.updateFloatingTimer(Math.max(0, newTime), 'guest')
+          }
           
           // Sync to store every 10 seconds
-          if (newTime % 10 === 0) {
-            useAppStore.setState({ timeRemaining: Math.max(0, newTime) })
+          if (newTime % 10 === 0 && newTime > 0) {
+            useAppStore.setState({ timeRemaining: newTime })
           }
           
           // Session ended
           if (newTime <= 0) {
-            console.log('⏱️ Time is up!')
+            console.log('⏱️ TIME IS UP! Ending session...')
+            isTimerRunning.current = false
             endCurrentSession()
             return 0
           }
@@ -89,21 +128,24 @@ export function SessionScreen() {
           return newTime
         })
       } else {
-        // For MEMBER sessions: just update floating timer with elapsed
-        setElapsedTime(prev => {
-          window.api?.updateFloatingTimer?.(prev, 'member')
-          return prev
-        })
+        // For MEMBER sessions: update floating timer with elapsed
+        if (window.api?.updateFloatingTimer) {
+          setElapsedTime(prev => {
+            window.api.updateFloatingTimer(prev, 'member')
+            return prev
+          })
+        }
       }
     }, 1000)
 
     // Cleanup
     return () => {
+      console.log('⏱️ Timer cleanup')
       if (timerRef.current) {
-        console.log('⏱️ Stopping timer')
         clearInterval(timerRef.current)
         timerRef.current = null
       }
+      isTimerRunning.current = false
     }
   }, [session?.id, session?.status, session?.session_type, endCurrentSession])
 
