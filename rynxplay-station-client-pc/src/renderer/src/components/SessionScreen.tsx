@@ -16,33 +16,81 @@ export function SessionScreen() {
   
   const [isMinimized, setIsMinimized] = useState(false)
   const [showEndConfirm, setShowEndConfirm] = useState(false)
+  
+  // Use refs for stable references
+  const timerRef = useRef<NodeJS.Timeout | null>(null)
   const chargeIntervalRef = useRef<NodeJS.Timeout | null>(null)
-
-  // Timer countdown for guest sessions
+  const decrementTimerRef = useRef(decrementTimer)
+  const chargeCreditsRef = useRef(chargeCredits)
+  
+  // Keep refs updated
   useEffect(() => {
-    if (!session || session.status !== 'active') return
+    decrementTimerRef.current = decrementTimer
+  }, [decrementTimer])
+  
+  useEffect(() => {
+    chargeCreditsRef.current = chargeCredits
+  }, [chargeCredits])
+
+  // Extract stable values for dependency tracking
+  const sessionStatus = session?.status
+  const sessionType = session?.session_type
+  const isSessionActive = sessionStatus === 'active'
+
+  // Timer countdown - runs for ALL active sessions
+  useEffect(() => {
+    // Clear any existing timer
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
     
-    const timer = setInterval(() => {
-      decrementTimer()
+    if (!isSessionActive) {
+      console.log('⏱️ Timer not started - session not active')
+      return
+    }
+    
+    console.log('⏱️ Starting countdown timer')
+    
+    timerRef.current = setInterval(() => {
+      decrementTimerRef.current()
     }, 1000)
     
-    return () => clearInterval(timer)
-  }, [session, decrementTimer])
+    return () => {
+      if (timerRef.current) {
+        console.log('⏱️ Cleaning up timer')
+        clearInterval(timerRef.current)
+        timerRef.current = null
+      }
+    }
+  }, [isSessionActive]) // Only depend on whether session is active
 
   // Credit charging for member sessions (every 60 seconds)
   useEffect(() => {
-    if (!session || session.session_type !== 'member' || session.status !== 'active') return
+    // Clear any existing charge interval
+    if (chargeIntervalRef.current) {
+      clearInterval(chargeIntervalRef.current)
+      chargeIntervalRef.current = null
+    }
+    
+    if (!isSessionActive || sessionType !== 'member') {
+      return
+    }
+    
+    console.log('💳 Starting credit charging interval')
     
     chargeIntervalRef.current = setInterval(async () => {
-      await chargeCredits()
+      await chargeCreditsRef.current()
     }, 60000) // Charge every minute
     
     return () => {
       if (chargeIntervalRef.current) {
+        console.log('💳 Cleaning up charge interval')
         clearInterval(chargeIntervalRef.current)
+        chargeIntervalRef.current = null
       }
     }
-  }, [session, chargeCredits])
+  }, [isSessionActive, sessionType]) // Only depend on session status and type
 
   const formatTime = (seconds: number): string => {
     if (seconds <= 0) return '00:00:00'
