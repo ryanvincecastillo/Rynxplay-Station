@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState } from 'react'
 import { useAppStore } from '../stores/appStore'
 
 export function SessionScreen() {
@@ -8,108 +8,22 @@ export function SessionScreen() {
     device,
     timeRemaining, 
     totalSecondsUsed,
-    decrementTimer,
-    chargeCredits,
-    endCurrentSession,
-    lock
+    endCurrentSession
   } = useAppStore()
   
   const [isMinimized, setIsMinimized] = useState(false)
   const [showEndConfirm, setShowEndConfirm] = useState(false)
-  
-  // Use refs for stable references
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const chargeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  
-  // Store the decrementTimer in a ref to avoid stale closures
-  const decrementTimerRef = useRef(decrementTimer)
-  const chargeCreditsRef = useRef(chargeCredits)
-  
-  // Keep refs updated with latest functions
-  useEffect(() => {
-    decrementTimerRef.current = decrementTimer
-  }, [decrementTimer])
-  
-  useEffect(() => {
-    chargeCreditsRef.current = chargeCredits
-  }, [chargeCredits])
-
-  // Extract stable values for dependency tracking
-  const sessionId = session?.id
-  const sessionStatus = session?.status
-  const sessionType = session?.session_type
 
   // Debug: Log session state changes
   useEffect(() => {
-    console.log('🔍 SessionScreen state:', {
-      sessionId,
-      sessionStatus,
-      sessionType,
+    console.log('🔍 SessionScreen render:', {
+      sessionId: session?.id,
+      sessionStatus: session?.status,
+      sessionType: session?.session_type,
       timeRemaining,
       totalSecondsUsed
     })
-  }, [sessionId, sessionStatus, sessionType, timeRemaining, totalSecondsUsed])
-
-  // Timer countdown - runs for ALL active sessions
-  useEffect(() => {
-    console.log('⏱️ Timer effect triggered, sessionStatus:', sessionStatus)
-    
-    // Always clear existing timer first
-    if (timerRef.current) {
-      console.log('⏱️ Clearing existing timer')
-      clearInterval(timerRef.current)
-      timerRef.current = null
-    }
-    
-    // Only start timer if session is active
-    if (sessionStatus !== 'active') {
-      console.log('⏱️ Timer not started - sessionStatus is:', sessionStatus)
-      return
-    }
-    
-    console.log('⏱️ Starting new countdown timer interval')
-    
-    // Create the interval
-    timerRef.current = setInterval(() => {
-      decrementTimerRef.current()
-    }, 1000)
-    
-    // Cleanup function
-    return () => {
-      console.log('⏱️ Timer cleanup called')
-      if (timerRef.current) {
-        clearInterval(timerRef.current)
-        timerRef.current = null
-      }
-    }
-  }, [sessionStatus]) // Only re-run when session status changes
-
-  // Credit charging for member sessions (every 60 seconds)
-  useEffect(() => {
-    // Clear any existing charge interval
-    if (chargeIntervalRef.current) {
-      clearInterval(chargeIntervalRef.current)
-      chargeIntervalRef.current = null
-    }
-    
-    if (sessionStatus !== 'active' || sessionType !== 'member') {
-      return
-    }
-    
-    console.log('💳 Starting credit charging interval')
-    
-    chargeIntervalRef.current = setInterval(async () => {
-      await chargeCreditsRef.current()
-    }, 60000) // Charge every minute
-    
-    return () => {
-      if (chargeIntervalRef.current) {
-        console.log('💳 Cleaning up charge interval')
-        clearInterval(chargeIntervalRef.current)
-        chargeIntervalRef.current = null
-      }
-    }
-  }, [sessionStatus, sessionType])
+  }, [session?.id, session?.status, session?.session_type, timeRemaining, totalSecondsUsed])
 
   const formatTime = (seconds: number): string => {
     if (seconds <= 0) return '00:00:00'
@@ -190,21 +104,21 @@ export function SessionScreen() {
   return (
     <>
       {/* Session Panel */}
-      <div className="fixed top-4 right-4 z-50 animate-slide-up">
-        <div className={`glass rounded-3xl p-6 min-w-[320px] ${
+      <div className="fixed top-4 right-4 z-50 animate-slide-up max-h-[calc(100vh-2rem)] overflow-hidden">
+        <div className={`glass rounded-3xl p-5 w-[300px] ${
           warningLevel === 'critical' ? 'border-red-500/50 animate-pulse' :
           warningLevel === 'warning' ? 'border-amber-500/50' : ''
         }`}>
           {/* Header */}
-          <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center justify-between mb-4">
             <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center">
-                <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center">
+                <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M8 5v14l11-7z" />
                 </svg>
               </div>
               <div>
-                <h3 className="text-white font-semibold">{device?.name}</h3>
+                <h3 className="text-white font-semibold text-sm">{device?.name}</h3>
                 <p className="text-xs text-slate-400">
                   {session?.session_type === 'guest' ? 'Guest Session' : 'Member Session'}
                 </p>
@@ -213,9 +127,9 @@ export function SessionScreen() {
             
             <button
               onClick={() => setIsMinimized(true)}
-              className="p-2 hover:bg-slate-700/50 rounded-lg transition-colors"
+              className="p-1.5 hover:bg-slate-700/50 rounded-lg transition-colors"
             >
-              <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
               </svg>
             </button>
@@ -223,9 +137,9 @@ export function SessionScreen() {
 
           {/* Timer / Credits Display */}
           {session?.session_type === 'guest' ? (
-            <div className="text-center mb-6">
-              <p className="text-sm text-slate-400 mb-2">Time Remaining</p>
-              <div className={`text-5xl font-bold timer-display ${
+            <div className="text-center mb-4">
+              <p className="text-xs text-slate-400 mb-1">Time Remaining</p>
+              <div className={`text-4xl font-bold timer-display ${
                 warningLevel === 'critical' ? 'text-red-400' :
                 warningLevel === 'warning' ? 'text-amber-400' : 'text-white'
               }`}>
@@ -233,16 +147,16 @@ export function SessionScreen() {
               </div>
             </div>
           ) : (
-            <div className="text-center mb-6">
-              <p className="text-sm text-slate-400 mb-2">Credits Balance</p>
-              <div className={`text-5xl font-bold ${
+            <div className="text-center mb-4">
+              <p className="text-xs text-slate-400 mb-1">Credits Balance</p>
+              <div className={`text-4xl font-bold ${
                 warningLevel === 'critical' ? 'text-red-400' :
                 warningLevel === 'warning' ? 'text-amber-400' : 'text-emerald-400'
               }`}>
                 {formatCredits(member?.credits || 0)}
               </div>
               {member && (
-                <p className="text-sm text-slate-400 mt-2">
+                <p className="text-xs text-slate-400 mt-1">
                   Welcome, <span className="text-white">{member.full_name || member.username}</span>
                 </p>
               )}
@@ -250,14 +164,14 @@ export function SessionScreen() {
           )}
 
           {/* Stats */}
-          <div className="grid grid-cols-2 gap-4 mb-6">
-            <div className="bg-slate-800/50 rounded-xl p-3 text-center">
-              <p className="text-xs text-slate-500 mb-1">Session Time</p>
-              <p className="text-lg font-mono text-white">{formatTime(totalSecondsUsed)}</p>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <div className="bg-slate-800/50 rounded-xl p-2.5 text-center">
+              <p className="text-xs text-slate-500 mb-0.5">Session Time</p>
+              <p className="text-sm font-mono text-white">{formatTime(totalSecondsUsed)}</p>
             </div>
-            <div className="bg-slate-800/50 rounded-xl p-3 text-center">
-              <p className="text-xs text-slate-500 mb-1">Rate</p>
-              <p className="text-lg text-white">
+            <div className="bg-slate-800/50 rounded-xl p-2.5 text-center">
+              <p className="text-xs text-slate-500 mb-0.5">Rate</p>
+              <p className="text-sm text-white">
                 {session?.rates ? `₱${session.rates.price_per_unit}/${session.rates.unit_minutes}min` : '-'}
               </p>
             </div>
@@ -265,8 +179,8 @@ export function SessionScreen() {
 
           {/* Warning Message */}
           {warningLevel === 'critical' && (
-            <div className="bg-red-500/20 border border-red-500/50 rounded-xl p-3 mb-4 text-center animate-pulse">
-              <p className="text-red-400 text-sm font-medium">
+            <div className="bg-red-500/20 border border-red-500/50 rounded-xl p-2.5 mb-3 text-center animate-pulse">
+              <p className="text-red-400 text-xs font-medium">
                 {session?.session_type === 'guest' 
                   ? 'Session ending soon!' 
                   : 'Low credits! Please top up.'}
@@ -277,9 +191,9 @@ export function SessionScreen() {
           {/* End Session Button */}
           <button
             onClick={() => setShowEndConfirm(true)}
-            className="w-full btn-secondary flex items-center justify-center"
+            className="w-full btn-secondary flex items-center justify-center py-2.5 text-sm"
           >
-            <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
             </svg>
             End Session
@@ -290,15 +204,15 @@ export function SessionScreen() {
       {/* End Session Confirmation Modal */}
       {showEndConfirm && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
-          <div className="glass rounded-3xl p-8 max-w-sm w-full mx-4 animate-slide-up">
-            <div className="text-center mb-6">
-              <div className="w-16 h-16 rounded-full bg-amber-500/20 mx-auto mb-4 flex items-center justify-center">
-                <svg className="w-8 h-8 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="glass rounded-3xl p-6 max-w-sm w-full mx-4 animate-slide-up">
+            <div className="text-center mb-5">
+              <div className="w-14 h-14 rounded-full bg-amber-500/20 mx-auto mb-3 flex items-center justify-center">
+                <svg className="w-7 h-7 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                 </svg>
               </div>
-              <h3 className="text-xl font-bold text-white mb-2">End Session?</h3>
-              <p className="text-slate-400">
+              <h3 className="text-lg font-bold text-white mb-2">End Session?</h3>
+              <p className="text-slate-400 text-sm">
                 Are you sure you want to end your current session?
               </p>
             </div>
@@ -306,13 +220,13 @@ export function SessionScreen() {
             <div className="flex space-x-3">
               <button
                 onClick={() => setShowEndConfirm(false)}
-                className="flex-1 btn-secondary"
+                className="flex-1 btn-secondary py-2.5"
               >
                 Cancel
               </button>
               <button
                 onClick={handleEndSession}
-                className="flex-1 bg-red-500 hover:bg-red-600 text-white font-semibold py-3 px-6 rounded-xl transition-colors"
+                className="flex-1 bg-red-500 hover:bg-red-600 text-white font-semibold py-2.5 px-4 rounded-xl transition-colors"
               >
                 End Session
               </button>

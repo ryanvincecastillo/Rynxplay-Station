@@ -30,6 +30,89 @@ import {
 } from '../lib/supabase'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 
+// Timer management at module level (outside React)
+let countdownTimer: ReturnType<typeof setInterval> | null = null
+let chargeTimer: ReturnType<typeof setInterval> | null = null
+
+function startCountdownTimer(store: AppStore) {
+  // Clear any existing timer
+  if (countdownTimer) {
+    clearInterval(countdownTimer)
+    countdownTimer = null
+  }
+  
+  console.log('⏱️ [STORE] Starting countdown timer')
+  
+  countdownTimer = setInterval(() => {
+    const { session, timeRemaining, totalSecondsUsed } = store
+    
+    if (!session || session.status !== 'active') {
+      console.log('⏱️ [STORE] Timer tick - no active session, stopping')
+      stopCountdownTimer()
+      return
+    }
+    
+    const newTimeRemaining = Math.max(0, timeRemaining - 1)
+    const newTotalSeconds = totalSecondsUsed + 1
+    
+    // Log every 5 seconds
+    if (newTotalSeconds % 5 === 0) {
+      console.log(`⏱️ [STORE] Timer tick: ${newTimeRemaining}s remaining, ${newTotalSeconds}s used`)
+    }
+    
+    // Update state using the store's internal setter
+    useAppStore.setState({
+      timeRemaining: newTimeRemaining,
+      totalSecondsUsed: newTotalSeconds
+    })
+    
+    // Update floating timer window
+    const displayTime = session.session_type === 'guest' ? newTimeRemaining : newTotalSeconds
+    window.api.updateFloatingTimer(displayTime, session.session_type)
+    
+    // End session if time runs out (guest sessions)
+    if (session.session_type === 'guest' && newTimeRemaining <= 0) {
+      console.log('⏱️ [STORE] Time ran out, ending session')
+      useAppStore.getState().endCurrentSession()
+    }
+  }, 1000)
+}
+
+function stopCountdownTimer() {
+  if (countdownTimer) {
+    console.log('⏱️ [STORE] Stopping countdown timer')
+    clearInterval(countdownTimer)
+    countdownTimer = null
+  }
+}
+
+function startChargeTimer(store: AppStore) {
+  // Clear any existing timer
+  if (chargeTimer) {
+    clearInterval(chargeTimer)
+    chargeTimer = null
+  }
+  
+  const { session } = store
+  if (!session || session.session_type !== 'member') {
+    return
+  }
+  
+  console.log('💳 [STORE] Starting credit charging timer')
+  
+  chargeTimer = setInterval(async () => {
+    await useAppStore.getState().chargeCredits()
+  }, 60000)
+}
+
+function stopChargeTimer() {
+  if (chargeTimer) {
+    console.log('💳 [STORE] Stopping credit charging timer')
+    clearInterval(chargeTimer)
+    chargeTimer = null
+  }
+}
+
 interface AppStore {
   // State
   screen: AppScreen
@@ -191,6 +274,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
             // Update device status to in_use
             await updateDeviceStatus(device.id, 'in_use', false)
             
+            // START THE COUNTDOWN TIMER
+            startCountdownTimer(get())
+            startChargeTimer(get())
+            
             // Start session time sync
             startSessionTimeSync(activeSession.id, () => ({
               timeRemaining: get().timeRemaining,
@@ -297,7 +384,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
   lock: async () => {
     const { device } = get()
     
-    // Stop session time sync
+    // Stop all timers
+    stopCountdownTimer()
+    stopChargeTimer()
     stopSessionTimeSync()
     stopSessionPolling()
     
@@ -329,6 +418,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const displayTime = session.session_type === 'guest' ? timeRemaining : totalSecondsUsed
       await window.api.updateFloatingTimer(displayTime, session.session_type)
       await window.api.showFloatingTimer()
+      
+      // START THE COUNTDOWN TIMER
+      startCountdownTimer(get())
+      startChargeTimer(get())
       
       // Start session time sync
       startSessionTimeSync(session.id, () => ({
@@ -456,7 +549,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
   endCurrentSession: async (terminatedByAdmin = false) => {
     const { session, device, totalSecondsUsed } = get()
     
-    // Stop session time sync
+    // Stop all timers
+    stopCountdownTimer()
+    stopChargeTimer()
     stopSessionTimeSync()
     stopSessionPolling()
     
@@ -489,26 +584,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   decrementTimer: () => {
+    // This function is now only called for manual triggers
+    // The main timer is managed at the store module level
     const { session, timeRemaining, totalSecondsUsed } = get()
     
-    // Debug logging
-    if (!session) {
-      console.log('⏱️ decrementTimer: No session')
-      return
-    }
-    
-    if (session.status !== 'active') {
-      console.log('⏱️ decrementTimer: Session not active, status:', session.status)
-      return
-    }
+    if (!session || session.status !== 'active') return
     
     const newTimeRemaining = Math.max(0, timeRemaining - 1)
     const newTotalSeconds = totalSecondsUsed + 1
-    
-    // Log every 10 seconds to avoid spam
-    if (newTotalSeconds % 10 === 0) {
-      console.log(`⏱️ Timer tick: ${newTimeRemaining}s remaining, ${newTotalSeconds}s used`)
-    }
     
     set({
       timeRemaining: newTimeRemaining,
@@ -650,6 +733,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
               
               await updateDeviceStatus(currentDevice.id, 'in_use', false)
               
+              // START THE COUNTDOWN TIMER
+              startCountdownTimer(get())
+              startChargeTimer(get())
+              
               // Start session time sync
               startSessionTimeSync(activeSession.id, () => ({
                 timeRemaining: get().timeRemaining,
@@ -733,7 +820,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
   cleanup: () => {
     const { channels, device } = get()
     
-    // Stop all intervals
+    // Stop all intervals including countdown timer
+    stopCountdownTimer()
+    stopChargeTimer()
     stopSessionTimeSync()
     stopSessionPolling()
     stopCommandPolling()
