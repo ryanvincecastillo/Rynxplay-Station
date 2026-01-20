@@ -10,6 +10,10 @@ import { v4 as uuidv4 } from 'uuid'
 import * as os from 'os'
 import * as readline from 'readline'
 
+// Low-level keyboard hook (loaded dynamically)
+let uIOhook: any = null
+let UiohookKey: any = null
+
 // ============================================
 // ADMIN KILL CODE - Change this to your secret
 // ============================================
@@ -82,6 +86,95 @@ let currentSessionType: 'guest' | 'member' | null = null
 // ============================================
 // WINDOWS SYSTEM LOCKDOWN
 // ============================================
+
+// Initialize low-level keyboard hook
+async function initKeyboardHook(): Promise<boolean> {
+  try {
+    const uiohookModule = await import('uiohook-napi')
+    uIOhook = uiohookModule.uIOhook
+    UiohookKey = uiohookModule.UiohookKey
+    console.log('✅ Low-level keyboard hook loaded')
+    return true
+  } catch (error) {
+    console.log('⚠️ uiohook-napi not installed. Windows key blocking limited.')
+    console.log('   Install with: npm install uiohook-napi')
+    return false
+  }
+}
+
+// Block Windows key using low-level hook
+function startKeyboardHook(): void {
+  if (!uIOhook) return
+
+  try {
+    // Listen for keydown events
+    uIOhook.on('keydown', (e: any) => {
+      // Detect Left Windows (Meta Left) and Right Windows (Meta Right) keys
+      // UiohookKey values: MetaLeft = 3675, MetaRight = 3676
+      if (isLocked && (e.keycode === 3675 || e.keycode === 3676 || 
+          e.keycode === UiohookKey?.MetaLeft || e.keycode === UiohookKey?.MetaRight)) {
+        console.log('🚫 Windows key detected - closing Start Menu')
+        closeStartMenu()
+      }
+    })
+
+    // Start the hook
+    uIOhook.start()
+    console.log('✅ Keyboard hook started')
+  } catch (error) {
+    console.error('Failed to start keyboard hook:', error)
+  }
+}
+
+// Close the Start Menu and refocus our window
+function closeStartMenu(): void {
+  if (process.platform !== 'win32') return
+  
+  // Method 1: Send Escape key to close Start Menu (fastest)
+  exec('powershell -Command "[void][System.Reflection.Assembly]::LoadWithPartialName(\'System.Windows.Forms\'); [System.Windows.Forms.SendKeys]::SendWait(\'{ESC}\')"')
+  
+  // Method 2: Click somewhere to dismiss Start Menu (backup)
+  // This simulates a click at position 0,0 which dismisses the start menu
+  exec('powershell -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(0,0)"')
+  
+  // Immediately refocus our window (multiple attempts)
+  if (mainWindow) {
+    mainWindow.show()
+    mainWindow.focus()
+    mainWindow.moveTop()
+    
+    // Refocus again after short delays to ensure we regain focus
+    setTimeout(() => {
+      if (isLocked && mainWindow) {
+        mainWindow.show()
+        mainWindow.focus()
+        mainWindow.moveTop()
+      }
+    }, 50)
+    
+    setTimeout(() => {
+      if (isLocked && mainWindow) {
+        mainWindow.show()
+        mainWindow.focus()
+        mainWindow.moveTop()
+      }
+    }, 150)
+  }
+  
+  // Re-hide the taskbar
+  hideTaskbar()
+}
+
+function stopKeyboardHook(): void {
+  if (!uIOhook) return
+  
+  try {
+    uIOhook.stop()
+    console.log('✅ Keyboard hook stopped')
+  } catch (error) {
+    // Ignore errors on stop
+  }
+}
 
 // Disable Windows key via registry (using reg.exe - more reliable)
 function disableWindowsKeyViaRegistry(): void {
@@ -215,6 +308,7 @@ function unregisterGlobalShortcuts(): void {
 
 // Combined lockdown functions
 let taskbarHideInterval: NodeJS.Timeout | null = null
+let startMenuMonitorInterval: NodeJS.Timeout | null = null
 
 function enableLockdownMode(): void {
   console.log('🔒 Enabling lockdown mode...')
@@ -222,12 +316,19 @@ function enableLockdownMode(): void {
   disableTaskManager()
   hideTaskbar()
   registerGlobalShortcuts()
+  startKeyboardHook() // Start low-level keyboard blocking
   
-  // Periodically hide taskbar in case it reappears (e.g., when Windows key is pressed)
+  // Periodically hide taskbar in case it reappears
   if (taskbarHideInterval) clearInterval(taskbarHideInterval)
   taskbarHideInterval = setInterval(() => {
     if (isLocked) hideTaskbar()
   }, 1000)
+  
+  // Monitor for Start Menu and close it if it appears
+  if (startMenuMonitorInterval) clearInterval(startMenuMonitorInterval)
+  startMenuMonitorInterval = setInterval(() => {
+    if (isLocked) closeStartMenuIfOpen()
+  }, 200) // Check every 200ms
 }
 
 function disableLockdownMode(): void {
@@ -239,10 +340,67 @@ function disableLockdownMode(): void {
     taskbarHideInterval = null
   }
   
+  // Stop Start Menu monitoring
+  if (startMenuMonitorInterval) {
+    clearInterval(startMenuMonitorInterval)
+    startMenuMonitorInterval = null
+  }
+  
+  // Cleanup temp scripts
+  if (startMenuScriptPath) {
+    try { fs.unlinkSync(startMenuScriptPath) } catch {}
+    startMenuScriptPath = null
+  }
+  
+  stopKeyboardHook() // Stop low-level keyboard blocking
   enableWindowsKeyViaRegistry()
   enableTaskManager()
   showTaskbar()
   unregisterGlobalShortcuts()
+}
+
+// Check if Start Menu is open and close it
+let startMenuScriptPath: string | null = null
+
+function closeStartMenuIfOpen(): void {
+  if (process.platform !== 'win32') return
+  
+  // Create the script once
+  if (!startMenuScriptPath) {
+    startMenuScriptPath = join(app.getPath('temp'), 'rynx_close_start.ps1')
+    const script = `
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public class StartMenuHelper {
+    [DllImport("user32.dll")]
+    public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+    
+    public static bool IsStartMenuOpen() {
+        // Windows 10/11 Start Menu class names
+        IntPtr startMenu = FindWindow("Windows.UI.Core.CoreWindow", "Start");
+        if (startMenu != IntPtr.Zero && IsWindowVisible(startMenu)) return true;
+        
+        startMenu = FindWindow("Windows.UI.Core.CoreWindow", null);
+        if (startMenu != IntPtr.Zero && IsWindowVisible(startMenu)) return true;
+        
+        return false;
+    }
+}
+'@
+if ([StartMenuHelper]::IsStartMenuOpen()) {
+    Add-Type -AssemblyName System.Windows.Forms
+    [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+}
+`
+    fs.writeFileSync(startMenuScriptPath, script)
+  }
+  
+  exec(`powershell -ExecutionPolicy Bypass -File "${startMenuScriptPath}"`, () => {})
 }
 
 // ============================================
@@ -890,6 +1048,10 @@ if (!gotTheLock) {
   app.whenReady().then(async () => {
     electronApp.setAppUserModelId('com.rynxplay.station.client')
     setupConsoleKillCode()
+    
+    // Initialize low-level keyboard hook for Windows key blocking
+    await initKeyboardHook()
+    
     app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
     setupIpcHandlers()
     createWindow()
@@ -915,5 +1077,8 @@ if (!gotTheLock) {
     if (!isAuthorizedExit && isLocked) { event.preventDefault(); rebootSystem() }
   })
 
-  app.on('will-quit', () => disableLockdownMode())
+  app.on('will-quit', () => {
+    stopKeyboardHook()
+    disableLockdownMode()
+  })
 }
