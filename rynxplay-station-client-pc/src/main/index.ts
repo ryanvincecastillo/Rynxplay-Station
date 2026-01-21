@@ -926,6 +926,7 @@ function showFloatingTimer(): void {
   if (floatingWindow && !isLocked) {
     floatingWindow.show()
     floatingTimerVisible = true
+    mainWindow?.hide()
   }
 }
 

@@ -106,7 +106,7 @@ export function SessionScreen() {
   if (!showPanel) {
     return (
       <button
-        onClick={() => setShowPanel(true)}
+        onClick={() => window.api?.showFloatingTimer?.()}
         className={`fixed bottom-20 right-4 z-50 px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-3 transition-all hover:scale-105 ${
           warning === 'critical' 
             ? 'bg-gradient-to-r from-red-500 to-rose-600' 
