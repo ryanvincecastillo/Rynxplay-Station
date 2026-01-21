@@ -59,6 +59,9 @@ interface Api {
   updateFloatingTimer: (time: number, sessionType: 'guest' | 'member', elapsed?: number) => Promise<boolean>
   showFloatingTimer: () => Promise<boolean>
   hideFloatingTimer: () => Promise<boolean>
+  
+  // Set session ID for direct DB sync
+  setSessionId: (sessionId: string | null, supabaseUrl?: string, supabaseKey?: string) => Promise<boolean>
 
   // System commands
   executeCommand: (command: string) => Promise<boolean>

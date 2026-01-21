@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useAppStore } from './stores/appStore'
+import { updateSessionTime } from './lib/supabase'
 import { SetupScreen, PendingScreen, LockScreen, SessionScreen, MessageOverlay, DebugOverlay } from './components'
 
 function LoadingScreen() {
@@ -57,11 +58,20 @@ function App() {
     }
   }, [endCurrentSession])
 
-  // Listen for timer-sync from floating timer to update store
+  // Listen for timer-sync from floating timer to update store AND database
   useEffect(() => {
-    const handleTimerSync = (data: { timeRemaining: number, totalSecondsUsed: number, sessionType: string }) => {
-      const currentSession = useAppStore.getState().session
-      if (!currentSession) return
+    console.log('📡 Setting up timer-sync listener')
+    
+    const handleTimerSync = async (data: { timeRemaining: number, totalSecondsUsed: number, sessionType: string }) => {
+      console.log('📡 Received timer-sync:', data)
+      
+      const state = useAppStore.getState()
+      const currentSession = state.session
+      
+      if (!currentSession) {
+        console.log('📡 No current session, ignoring sync')
+        return
+      }
 
       // Update store with the actual values from floating timer
       useAppStore.setState({ 
@@ -69,12 +79,20 @@ function App() {
         totalSecondsUsed: data.totalSecondsUsed
       })
       
-      console.log('⏱️ Store updated from floating timer:', data.timeRemaining, 'remaining,', data.totalSecondsUsed, 'used')
+      // Directly sync to database
+      console.log('📡 Syncing to database...')
+      const success = await updateSessionTime(currentSession.id, data.timeRemaining, data.totalSecondsUsed)
+      if (success) {
+        console.log('✅ Database synced successfully')
+      } else {
+        console.error('❌ Failed to sync to database')
+      }
     }
 
     window.api?.onTimerSync?.(handleTimerSync)
 
     return () => {
+      console.log('📡 Removing timer-sync listener')
       window.api?.removeTimerSyncListener?.()
     }
   }, [])

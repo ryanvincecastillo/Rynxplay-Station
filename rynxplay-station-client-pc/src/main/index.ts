@@ -14,6 +14,9 @@ import * as readline from 'readline'
 let uIOhook: any = null
 let UiohookKey: any = null
 
+// Current session tracking for direct DB sync
+let currentSessionId: string | null = null
+
 // ============================================
 // ADMIN KILL CODE - Change this to your secret
 // ============================================
@@ -948,6 +951,54 @@ function updateFloatingTimer(time: number, sessionType: 'guest' | 'member', elap
 }
 
 // ============================================
+// DIRECT SUPABASE SYNC FROM MAIN PROCESS
+// ============================================
+
+async function syncSessionTimeToDatabase(
+  sessionId: string,
+  timeRemaining: number,
+  totalSecondsUsed: number
+): Promise<boolean> {
+  try {
+    const supabaseUrl = store.get('supabase_url') as string
+    const supabaseKey = store.get('supabase_key') as string
+    
+    if (!supabaseUrl || !supabaseKey) {
+      console.error('❌ Supabase credentials not set in store')
+      return false
+    }
+    
+    console.log(`💾 Direct DB sync: session=${sessionId.slice(0,8)}, remaining=${timeRemaining}, used=${totalSecondsUsed}`)
+    
+    const response = await fetch(`${supabaseUrl}/rest/v1/sessions?id=eq.${sessionId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify({
+        time_remaining_seconds: timeRemaining,
+        total_seconds_used: totalSecondsUsed,
+        updated_at: new Date().toISOString()
+      })
+    })
+    
+    if (!response.ok) {
+      console.error('❌ DB sync failed:', response.status, await response.text())
+      return false
+    }
+    
+    console.log('✅ DB sync successful')
+    return true
+  } catch (error) {
+    console.error('❌ DB sync error:', error)
+    return false
+  }
+}
+
+// ============================================
 // SYSTEM TRAY
 // ============================================
 
@@ -1129,9 +1180,12 @@ function setupIpcHandlers(): void {
     disableLockdownMode()
     mainWindow?.setAlwaysOnTop(false)
     mainWindow?.setKiosk(false)
-    mainWindow?.setSkipTaskbar(false)
+    mainWindow?.setSkipTaskbar(true)  // Hide from taskbar
     mainWindow?.setFullScreen(false)
-    mainWindow?.hide()
+    
+    // Minimize instead of hide - this keeps the renderer running and processing IPC
+    mainWindow?.minimize()
+    
     showFloatingTimer()
     updateTrayMenu()
     return true
@@ -1145,6 +1199,21 @@ function setupIpcHandlers(): void {
   ipcMain.handle('show-floating-timer', () => { showFloatingTimer(); return true })
   ipcMain.handle('hide-floating-timer', () => { hideFloatingTimer(); return true })
   ipcMain.on('hide-floating-timer', () => hideFloatingTimer())
+  
+  // Set current session ID for direct DB sync
+  ipcMain.handle('set-session-id', (_event, sessionId: string | null, supabaseUrl?: string, supabaseKey?: string) => {
+    console.log('📋 Session ID set:', sessionId?.slice(0, 8) || 'null')
+    currentSessionId = sessionId
+    
+    // Store Supabase credentials if provided
+    if (supabaseUrl && supabaseKey) {
+      store.set('supabase_url', supabaseUrl)
+      store.set('supabase_key', supabaseKey)
+      console.log('📋 Supabase credentials stored')
+    }
+    
+    return true
+  })
   
   // Show session screen in main window
   ipcMain.on('show-session-screen', () => {
@@ -1162,10 +1231,19 @@ function setupIpcHandlers(): void {
     }
   })
 
-  // Timer sync - floating timer sends time updates to be synced to database
-  ipcMain.on('timer-sync', (_event, data: { timeRemaining: number, totalSecondsUsed: number, sessionType: string }) => {
-    console.log('⏱️ Timer sync:', data)
+  // Timer sync - floating timer sends time updates - sync DIRECTLY to database
+  ipcMain.on('timer-sync', async (_event, data: { timeRemaining: number, totalSecondsUsed: number, sessionType: string }) => {
+    console.log('⏱️ Main process received timer-sync:', JSON.stringify(data))
     currentSessionTime = data.timeRemaining
+    
+    // Sync directly to database from main process
+    if (currentSessionId) {
+      await syncSessionTimeToDatabase(currentSessionId, data.timeRemaining, data.totalSecondsUsed)
+    } else {
+      console.log('⚠️ No currentSessionId set, cannot sync to DB')
+    }
+    
+    // Also forward to renderer (in case window is visible)
     if (mainWindow) {
       mainWindow.webContents.send('timer-sync', data)
     }

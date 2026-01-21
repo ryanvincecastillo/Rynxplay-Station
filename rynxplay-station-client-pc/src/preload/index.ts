@@ -64,6 +64,10 @@ const api = {
     ipcRenderer.invoke('update-floating-timer', time, sessionType, elapsed || 0),
   showFloatingTimer: (): Promise<boolean> => ipcRenderer.invoke('show-floating-timer'),
   hideFloatingTimer: (): Promise<boolean> => ipcRenderer.invoke('hide-floating-timer'),
+  
+  // Set session ID for direct DB sync from main process
+  setSessionId: (sessionId: string | null, supabaseUrl?: string, supabaseKey?: string): Promise<boolean> => 
+    ipcRenderer.invoke('set-session-id', sessionId, supabaseUrl, supabaseKey),
 
   // System commands
   executeCommand: (command: string): Promise<boolean> => 

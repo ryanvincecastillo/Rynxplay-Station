@@ -244,6 +244,8 @@ export async function updateSessionTime(
 ): Promise<boolean> {
   const supabase = getSupabase()
   
+  console.log(`💾 updateSessionTime: session=${sessionId.slice(0,8)}, remaining=${timeRemainingSeconds}, used=${totalSecondsUsed}`)
+  
   const { error } = await supabase
     .from('sessions')
     .update({
@@ -254,10 +256,11 @@ export async function updateSessionTime(
     .eq('id', sessionId)
 
   if (error) {
-    console.error('Error updating session time:', error)
+    console.error('❌ Error updating session time:', error)
     return false
   }
 
+  console.log('✅ Session time updated in DB')
   return true
 }
 
@@ -796,7 +799,7 @@ export function startSessionTimeSync(
   getTimeData: () => { timeRemaining: number; totalSecondsUsed: number },
   intervalMs: number = 10000 // Sync every 10 seconds
 ): void {
-  debugLog('info', `🔄 Starting session time sync (every ${intervalMs}ms)`)
+  console.log(`🔄 Starting session time sync for session ${sessionId.slice(0,8)} (every ${intervalMs}ms)`)
   
   if (sessionTimeSyncInterval) {
     clearInterval(sessionTimeSyncInterval)
@@ -804,9 +807,13 @@ export function startSessionTimeSync(
   
   sessionTimeSyncInterval = setInterval(async () => {
     const { timeRemaining, totalSecondsUsed } = getTimeData()
+    console.log(`🔄 Sync tick - timeRemaining: ${timeRemaining}, totalSecondsUsed: ${totalSecondsUsed}`)
+    
     const success = await updateSessionTime(sessionId, timeRemaining, totalSecondsUsed)
     if (success) {
       debugLog('info', `⏱️ Session time synced: ${timeRemaining}s remaining, ${totalSecondsUsed}s used`)
+    } else {
+      console.error('❌ Failed to sync session time')
     }
   }, intervalMs)
 }
