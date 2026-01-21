@@ -636,7 +636,7 @@ function createFloatingWindow(): void {
 
   floatingWindow = new BrowserWindow({
     width: 310,
-    height: 150,
+    height: 145,
     x: screenWidth - 320,
     y: 20,
     show: false,
@@ -1218,6 +1218,7 @@ function setupIpcHandlers(): void {
   // Show session screen in main window
   ipcMain.on('show-session-screen', () => {
     if (mainWindow && !isLocked) {
+      hideFloatingTimer()
       mainWindow.show()
       mainWindow.focus()
     }

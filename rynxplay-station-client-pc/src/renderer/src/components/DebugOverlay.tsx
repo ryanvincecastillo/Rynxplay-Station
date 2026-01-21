@@ -326,7 +326,7 @@ export function DebugOverlay() {
               ↑↓ History • Enter to execute
             </p>
             <p className="text-[9px] text-amber-500/70">
-              💡 Default kill code: RYNX-ADMIN-EXIT-2024
+              💡 Default kill code is in in the admin settings
             </p>
           </div>
         </div>
