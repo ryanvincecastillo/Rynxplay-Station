@@ -188,16 +188,22 @@ export const useAppStore = create<AppStore>((set, get) => ({
             
             await window.api.unlockScreen()
             
+            // *** NEW: Set session ID in main process for direct DB sync ***
+            await setupSessionInMainProcess(activeSession.id)
+            
             // Update device status to in_use
             await updateDeviceStatus(device.id, 'in_use', false)
             
-            // START THE COUNTDOWN TIMER
+            // Update floating timer with initial values
+            const displayTime = activeSession.session_type === 'guest' ? sessionTime : sessionUsed
+            await window.api.updateFloatingTimer(displayTime, activeSession.session_type, sessionUsed)
+            await window.api.showFloatingTimer()
             
             // Start session time sync
             startSessionTimeSync(activeSession.id, () => ({
               timeRemaining: get().timeRemaining,
               totalSecondsUsed: get().totalSecondsUsed
-            }), 5000) // Sync every 5 seconds
+            }), 5000)
             
             startSessionPolling(activeSession.id, () => {
               get().endCurrentSession(true)
@@ -327,12 +333,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
     await window.api.unlockScreen()
     
     // Show floating timer
-    if (session) {
-      const displayTime = session.session_type === 'guest' ? timeRemaining : totalSecondsUsed
-      await window.api.updateFloatingTimer(displayTime, session.session_type)
-      await window.api.showFloatingTimer()
+    if (session && session.id !== 'guest-local') {
+      // *** NEW: Set session ID in main process for direct DB sync ***
+      await setupSessionInMainProcess(session.id)
       
-      // START THE COUNTDOWN TIMER
+      const displayTime = session.session_type === 'guest' ? timeRemaining : totalSecondsUsed
+      await window.api.updateFloatingTimer(displayTime, session.session_type, totalSecondsUsed)
+      await window.api.showFloatingTimer()
       
       // Start session time sync
       startSessionTimeSync(session.id, () => ({
@@ -447,6 +454,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     })
     
     await get().unlock()
+    await setupSessionInMainProcess(session.id)
     
     // Start session time sync
     startSessionTimeSync(session.id, () => ({
@@ -756,6 +764,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
   }
 }))
 
+// Helper to set session ID in main process for direct DB sync
+async function setupSessionInMainProcess(sessionId: string): Promise<void> {
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+  const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+  console.log('📋 Setting session ID in main process:', sessionId.slice(0, 8))
+  await window.api.setSessionId(sessionId, supabaseUrl, supabaseKey)
+}
+
+
 // Helper functions
 function setupSubscriptions(
   deviceId: string,
@@ -788,6 +805,10 @@ function setupSubscriptions(
           totalSecondsUsed: session.total_seconds_used || 0,
           screen: 'session'
         })
+        
+        // *** NEW: Set session ID in main process for direct DB sync ***
+        await setupSessionInMainProcess(session.id)
+        
         await get().unlock()
         
         startSessionTimeSync(session.id, () => ({
@@ -807,6 +828,7 @@ function setupSubscriptions(
       }
     }
   })
+
   channels.push(sessionChannel)
   
   const commandChannel = subscribeToCommands(deviceId, (command) => {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useAppStore } from '../stores/appStore'
 
 export function SessionScreen() {
@@ -6,30 +6,36 @@ export function SessionScreen() {
   const member = useAppStore(s => s.member)
   const device = useAppStore(s => s.device)
   const storeTimeRemaining = useAppStore(s => s.timeRemaining)
+  const storeTotalSecondsUsed = useAppStore(s => s.totalSecondsUsed)
   const endCurrentSession = useAppStore(s => s.endCurrentSession)
 
   const [showConfirm, setShowConfirm] = useState(false)
   
-  // Timer state - LOCAL to this component
-  const [timeLeft, setTimeLeft] = useState(0)
-  const [timeUsed, setTimeUsed] = useState(0)
+  // Timer state - synced with store
+  const [timeLeft, setTimeLeft] = useState(storeTimeRemaining)
+  const [timeUsed, setTimeUsed] = useState(storeTotalSecondsUsed)
   const [timerStarted, setTimerStarted] = useState(false)
+  
+  // Use ref to track if we've initialized to prevent re-init
+  const initializedRef = useRef(false)
 
   const isGuest = session?.session_type === 'guest'
 
   // Initialize timer ONCE when component mounts or session changes
   useEffect(() => {
     if (!session) return
+    if (initializedRef.current && session.id === initializedRef.current) return
 
     // Get initial time from session or store
     const initialTime = session.time_remaining_seconds || storeTimeRemaining || 0
-    const initialUsed = session.total_seconds_used || 0
+    const initialUsed = session.total_seconds_used || storeTotalSecondsUsed || 0
 
-    console.log('🎮 Session loaded - initialTime:', initialTime)
+    console.log('🎮 Session loaded - initialTime:', initialTime, 'initialUsed:', initialUsed)
     
     setTimeLeft(initialTime)
     setTimeUsed(initialUsed)
     setTimerStarted(true)
+    initializedRef.current = session.id
   }, [session?.id])
 
   // THE TIMER - runs when timerStarted is true
@@ -40,16 +46,24 @@ export function SessionScreen() {
 
     const intervalId = setInterval(() => {
       // Increment elapsed time
-      setTimeUsed(prev => prev + 1)
+      setTimeUsed(prev => {
+        const newUsed = prev + 1
+        // Update the Zustand store
+        useAppStore.setState({ totalSecondsUsed: newUsed })
+        return newUsed
+      })
 
       // For guest sessions, decrement remaining time
       if (isGuest) {
         setTimeLeft(prev => {
-          const newTime = prev - 1
+          const newTime = Math.max(0, prev - 1)
+          
+          // Update the Zustand store - THIS IS CRITICAL FOR DB SYNC
+          useAppStore.setState({ timeRemaining: newTime })
           
           // Update floating timer
           if (window.api?.updateFloatingTimer) {
-            window.api.updateFloatingTimer(Math.max(0, newTime), 'guest')
+            window.api.updateFloatingTimer(newTime, 'guest')
           }
 
           // Time's up
@@ -77,6 +91,22 @@ export function SessionScreen() {
       clearInterval(intervalId)
     }
   }, [timerStarted, session?.id, isGuest, endCurrentSession])
+
+  // Sync local state when store updates (e.g., from timer-sync IPC)
+  useEffect(() => {
+    // Only sync if significantly different (to avoid loops)
+    if (Math.abs(storeTimeRemaining - timeLeft) > 2) {
+      console.log('📡 Syncing from store - timeRemaining:', storeTimeRemaining)
+      setTimeLeft(storeTimeRemaining)
+    }
+  }, [storeTimeRemaining])
+
+  useEffect(() => {
+    if (Math.abs(storeTotalSecondsUsed - timeUsed) > 2) {
+      console.log('📡 Syncing from store - totalSecondsUsed:', storeTotalSecondsUsed)
+      setTimeUsed(storeTotalSecondsUsed)
+    }
+  }, [storeTotalSecondsUsed])
 
   // Format time
   const formatTime = (secs: number) => {
