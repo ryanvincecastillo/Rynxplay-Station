@@ -633,7 +633,7 @@ function createFloatingWindow(): void {
 
   floatingWindow = new BrowserWindow({
     width: 300,
-    height: 120,
+    height: 140,
     x: screenWidth - 320,
     y: 20,
     show: false,
@@ -649,10 +649,8 @@ function createFloatingWindow(): void {
     hasShadow: true,
     focusable: false,
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      sandbox: false,
-      nodeIntegration: false,
-      contextIsolation: true
+      nodeIntegration: true,
+      contextIsolation: false
     }
   })
 
@@ -783,6 +781,8 @@ function createFloatingWindow(): void {
       <script>
         const { ipcRenderer } = require('electron');
         
+        console.log('🎯 Floating timer script loaded');
+        
         // Timer state
         let currentTime = 0;
         let sessionType = 'guest';
@@ -825,6 +825,8 @@ function createFloatingWindow(): void {
         }
         
         function startTimer() {
+          console.log('🎯 startTimer called, currentTime:', currentTime);
+          
           // Clear existing interval
           if (timerInterval) {
             clearInterval(timerInterval);
@@ -837,7 +839,9 @@ function createFloatingWindow(): void {
               currentTime = Math.max(0, currentTime - 1);
               if (currentTime <= 0) {
                 // Time's up - notify main process
+                console.log('🎯 Time up! Sending timer-ended');
                 ipcRenderer.send('timer-ended');
+                clearInterval(timerInterval);
               }
             } else {
               // Count up for member (elapsed time)
@@ -845,26 +849,32 @@ function createFloatingWindow(): void {
             }
             updateDisplay();
           }, 1000);
+          
+          console.log('🎯 Timer interval started');
         }
         
         function hideTimer() {
+          console.log('🎯 hideTimer clicked');
           ipcRenderer.send('hide-floating-timer');
         }
         
         function showSession() {
+          console.log('🎯 showSession clicked');
           ipcRenderer.send('show-session-screen');
         }
         
         // Receive timer updates from main process
-        ipcRenderer.on('update-timer', (event, { time, sessionType: type }) => {
-          currentTime = time;
-          sessionType = type;
+        ipcRenderer.on('update-timer', (event, data) => {
+          console.log('🎯 Received update-timer:', data);
+          currentTime = data.time;
+          sessionType = data.sessionType;
           updateDisplay();
           startTimer();
         });
         
         // Stop timer when session ends
         ipcRenderer.on('stop-timer', () => {
+          console.log('🎯 Received stop-timer');
           if (timerInterval) {
             clearInterval(timerInterval);
             timerInterval = null;
@@ -872,10 +882,14 @@ function createFloatingWindow(): void {
           currentTime = 0;
           updateDisplay();
         });
+        
+        // Initial display
+        updateDisplay();
       </script>
     </body>
     </html>
   `
+
   floatingWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(floatingHTML)}`)
 
   floatingWindow.on('close', (event) => {
@@ -900,11 +914,16 @@ function hideFloatingTimer(): void {
 }
 
 function updateFloatingTimer(time: number, sessionType: 'guest' | 'member'): void {
+  console.log(`🕐 updateFloatingTimer called: time=${time}, type=${sessionType}, isLocked=${isLocked}, hasWindow=${!!floatingWindow}`)
+  
   currentSessionTime = time
   currentSessionType = sessionType
   
   if (floatingWindow && !isLocked) {
+    console.log('🕐 Sending update-timer to floating window')
     floatingWindow.webContents.send('update-timer', { time, sessionType })
+  } else {
+    console.log('🕐 NOT sending - floatingWindow:', !!floatingWindow, 'isLocked:', isLocked)
   }
 }
 
