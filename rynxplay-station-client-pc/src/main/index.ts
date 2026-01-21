@@ -633,7 +633,7 @@ function createFloatingWindow(): void {
 
   floatingWindow = new BrowserWindow({
     width: 300,
-    height: 140,
+    height: 160,
     x: screenWidth - 320,
     y: 20,
     show: false,
