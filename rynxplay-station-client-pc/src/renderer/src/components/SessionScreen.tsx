@@ -272,7 +272,7 @@ export function SessionScreen() {
             {/* Action Buttons */}
             <div className="grid grid-cols-2 gap-4">
               <button
-                onClick={() => setShowPanel(false)}
+                onClick={() => window.api?.showFloatingTimer?.() }
                 className="bg-slate-700 hover:bg-slate-600 text-white font-semibold py-4 rounded-2xl transition flex items-center justify-center gap-2"
               >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
