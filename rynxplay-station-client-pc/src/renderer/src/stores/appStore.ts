@@ -603,17 +603,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
             
             if (activeSession) {
               console.log('✅ Found active session:', activeSession.id)
-              console.log('📋 Session details:', {
-                id: activeSession.id,
-                status: activeSession.status,
-                session_type: activeSession.session_type,
-                time_remaining_seconds: activeSession.time_remaining_seconds,
-                total_seconds_used: activeSession.total_seconds_used
-              })
+              console.log('📋 time_remaining_seconds:', activeSession.time_remaining_seconds)
               
-              const sessionTime = activeSession.time_remaining_seconds || timeRemaining
+              // Use time from session, fallback to command payload, fallback to 0
+              const sessionTime = activeSession.time_remaining_seconds ?? timeRemaining ?? 0
               
-              console.log('⏱️ Setting timeRemaining to:', sessionTime)
+              console.log('⏱️ Final sessionTime:', sessionTime)
               
               set({
                 session: activeSession,

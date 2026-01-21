@@ -22,17 +22,6 @@ export function SessionScreen() {
   const isGuest = session?.session_type === 'guest'
   const isActive = session?.status === 'active'
 
-  // DEBUG on every render
-  console.log('🔄 RENDER:', {
-    sessionId: session?.id?.slice(0, 8),
-    sessionStatus: session?.status,
-    'session.time_remaining_seconds': session?.time_remaining_seconds,
-    storeTimeRemaining,
-    timeLeft,
-    isActive,
-    initialized: initializedRef.current
-  })
-
   // Combined initialization and timer effect
   useEffect(() => {
     // Clear any existing timer
@@ -43,7 +32,6 @@ export function SessionScreen() {
 
     // Don't do anything if no active session
     if (!session || !isActive) {
-      console.log('⏱️ No active session')
       initializedRef.current = false
       return
     }
@@ -58,13 +46,7 @@ export function SessionScreen() {
     
     const initialUsed = session.total_seconds_used || storeTotalUsed || 0
 
-    console.log('📋 TIMER SETUP:', { 
-      'session.time_remaining_seconds': session.time_remaining_seconds,
-      storeTimeRemaining,
-      initialTime, 
-      initialUsed, 
-      isGuest 
-    })
+    console.log('⏱️ Timer init:', initialTime, 'seconds')
 
     // Set initial values
     setTimeLeft(initialTime)
@@ -73,11 +55,11 @@ export function SessionScreen() {
 
     // Don't start timer if guest session has no time
     if (isGuest && initialTime <= 0) {
-      console.log('⚠️ Guest session with 0 time - not starting timer')
+      console.log('⚠️ No time for guest session')
       return
     }
 
-    console.log('✅ TIMER STARTED!')
+    console.log('✅ Timer started')
 
     // Start the timer
     timerIdRef.current = window.setInterval(() => {
@@ -86,11 +68,8 @@ export function SessionScreen() {
       if (isGuest) {
         setTimeLeft(prev => {
           const newVal = prev - 1
-          if (newVal % 10 === 0 && newVal > 0) {
-            console.log(`⏱️ ${newVal}s remaining`)
-          }
           if (newVal <= 0) {
-            console.log('⏱️ TIME UP!')
+            console.log('⏱️ Time up!')
             endCurrentSession()
             return 0
           }
@@ -101,7 +80,6 @@ export function SessionScreen() {
 
     return () => {
       if (timerIdRef.current) {
-        console.log('⏱️ Timer cleanup')
         window.clearInterval(timerIdRef.current)
         timerIdRef.current = null
       }

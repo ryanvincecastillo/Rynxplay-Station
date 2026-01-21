@@ -1,876 +1,820 @@
-import { create } from 'zustand'
-import type { AppConfig, Device, Session, Member, AppScreen, SystemInfo, SystemSpecs, DeviceCommand } from '../types'
-import {
-  initSupabase,
-  isSupabaseConfigured,
-  getDeviceByCode,
-  registerPendingDevice as registerPendingDeviceApi,
-  updateDeviceStatus,
-  updateDeviceSpecs,
-  sendHeartbeat,
-  getActiveSession,
-  endSession,
-  loginMember,
-  startMemberSession,
-  chargeMemberCredits,
-  getPendingCommands,
-  markCommandExecuted,
-  subscribeToDevice,
-  subscribeToSession,
-  subscribeToCommands,
-  subscribeToMemberCredits,
-  unsubscribe,
-  startCommandPolling,
-  stopCommandPolling,
-  startSessionPolling,
-  stopSessionPolling,
-  updateSessionTime,
-  startSessionTimeSync,
-  stopSessionTimeSync
-} from '../lib/supabase'
-import type { RealtimeChannel } from '@supabase/supabase-js'
+import { createClient, SupabaseClient, RealtimeChannel } from '@supabase/supabase-js'
+import type { Device, Session, Member, DeviceCommand, Rate, Branch, SystemSpecs } from '../types'
 
-interface AppStore {
-  // State
-  screen: AppScreen
-  isLocked: boolean
-  isOnline: boolean
-  isInitialized: boolean
-  isSupabaseConfigured: boolean
-  device: Device | null
-  session: Session | null
-  member: Member | null
-  config: AppConfig | null
-  systemInfo: SystemInfo | null
-  systemSpecs: SystemSpecs | null
-  deviceCode: string | null
-  qrCodeUrl: string | null
-  message: string | null
-  error: string | null
-  
-  // Admin unlock state
-  isAdminUnlocked: boolean
-  adminUnlockExpiresAt: number | null
-  adminUnlockedBy: string | null
-  
-  // Timer state
-  timeRemaining: number
-  totalSecondsUsed: number
-  
-  // Realtime channels
-  channels: RealtimeChannel[]
-  
-  // Actions
-  initialize: () => Promise<void>
-  setConfig: (config: Partial<AppConfig>) => Promise<void>
-  setDeviceName: (name: string) => Promise<void>
-  registerPendingDevice: () => Promise<boolean>
-  
-  // Lock/Unlock
-  lock: () => Promise<void>
-  unlock: () => Promise<void>
-  adminUnlock: (durationMinutes: number, unlockedBy: string) => Promise<void>
-  checkAdminUnlockExpiry: () => void
-  
-  // Session management
-  startGuestSession: (timeSeconds: number) => void
-  handleMemberLogin: (username: string, pin: string) => Promise<boolean>
-  endCurrentSession: (terminatedByAdmin?: boolean) => Promise<void>
-  
-  // Timer
-  decrementTimer: () => void
-  chargeCredits: () => Promise<boolean>
-  syncSessionTime: () => Promise<void>
-  
-  // Commands
-  processCommand: (command: DeviceCommand) => Promise<void>
-  
-  // UI
-  showMessage: (message: string) => void
-  clearMessage: () => void
-  setError: (error: string | null) => void
-  setScreen: (screen: AppScreen) => void
-  
-  // Cleanup
-  cleanup: () => void
+// Get Supabase credentials from environment variables
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY
+
+let supabaseClient: SupabaseClient | null = null
+
+// Debug logging helper
+function debugLog(type: 'info' | 'success' | 'error' | 'command', message: string) {
+  const logFn = (window as any).addDebugLog
+  if (logFn) {
+    logFn(type, message)
+  }
+  const prefix = type === 'success' ? '✅' : type === 'error' ? '❌' : type === 'command' ? '🎮' : '📡'
+  console.log(`${prefix} [Supabase] ${message}`)
 }
 
-export const useAppStore = create<AppStore>((set, get) => ({
-  // Initial state
-  screen: 'setup',
-  isLocked: true,
-  isOnline: false,
-  isInitialized: false,
-  isSupabaseConfigured: false,
-  device: null,
-  session: null,
-  member: null,
-  config: null,
-  systemInfo: null,
-  systemSpecs: null,
-  deviceCode: null,
-  qrCodeUrl: null,
-  message: null,
-  error: null,
-  timeRemaining: 0,
-  totalSecondsUsed: 0,
-  channels: [],
-  
-  // Admin unlock state
-  isAdminUnlocked: false,
-  adminUnlockExpiresAt: null,
-  adminUnlockedBy: null,
-
-  initialize: async () => {
-    try {
-      const config = await window.api.getConfig() as AppConfig
-      const systemInfo = await window.api.getSystemInfo()
-      
-      set({ config, systemInfo })
-
-      const deviceCode = await window.api.getDeviceCode()
-      set({ deviceCode })
-
-      const qrCodeUrl = await window.api.generateQRCode(deviceCode)
-      set({ qrCodeUrl })
-
-      const systemSpecs = await window.api.getSystemSpecs() as SystemSpecs
-      set({ systemSpecs })
-
-      const supabaseConfigured = isSupabaseConfigured()
-      set({ isSupabaseConfigured: supabaseConfigured })
-
-      if (!supabaseConfigured) {
-        set({ screen: 'setup', isInitialized: true })
-        return
-      }
-
-      try {
-        initSupabase()
-      } catch (err) {
-        console.error('Failed to initialize Supabase:', err)
-        set({ screen: 'setup', isInitialized: true })
-        return
-      }
-
-      const device = await getDeviceByCode(deviceCode)
-      
-      if (device) {
-        set({ device, isOnline: true })
-
-        await updateDeviceSpecs(deviceCode, systemSpecs)
-
-        if (device.branch_id) {
-          await window.api.saveConfig({ 
-            ...config, 
-            isRegistered: true, 
-            isApproved: true,
-            deviceId: device.id,
-            branchId: device.branch_id
-          })
-
-          await updateDeviceStatus(device.id, 'online', device.is_locked)
-          
-          const activeSession = await getActiveSession(device.id)
-          
-          if (activeSession) {
-            const sessionTime = activeSession.time_remaining_seconds || 0
-            const sessionUsed = activeSession.total_seconds_used || 0
-            
-            set({ 
-              session: activeSession,
-              member: activeSession.members || null,
-              isLocked: false,
-              screen: 'session',
-              timeRemaining: sessionTime,
-              totalSecondsUsed: sessionUsed
-            })
-            
-            await window.api.unlockScreen()
-            
-            // Update device status to in_use
-            await updateDeviceStatus(device.id, 'in_use', false)
-            
-            // START THE COUNTDOWN TIMER
-            
-            // Start session time sync
-            startSessionTimeSync(activeSession.id, () => ({
-              timeRemaining: get().timeRemaining,
-              totalSecondsUsed: get().totalSecondsUsed
-            }), 5000) // Sync every 5 seconds
-            
-            startSessionPolling(activeSession.id, () => {
-              get().endCurrentSession(true)
-            })
-          } else {
-            set({ screen: 'lock', isLocked: true })
-            await window.api.lockScreen()
-          }
-          
-          setupSubscriptions(device.id, deviceCode, set, get)
-          
-          // Start heartbeat - more frequently for better status tracking
-          startHeartbeatInterval(device.id, 15000) // Every 15 seconds
-          
-          const commands = await getPendingCommands(device.id)
-          for (const cmd of commands) {
-            await get().processCommand(cmd)
-          }
-        } else {
-          set({ screen: 'pending' })
-          
-          const channel = subscribeToDevice(deviceCode, async (updatedDevice) => {
-            if (updatedDevice.branch_id) {
-              set({ device: updatedDevice })
-              
-              await window.api.saveConfig({ 
-                ...get().config, 
-                isRegistered: true, 
-                isApproved: true,
-                deviceId: updatedDevice.id,
-                branchId: updatedDevice.branch_id
-              })
-              
-              get().cleanup()
-              await get().initialize()
-            }
-          })
-          
-          set({ channels: [channel] })
-        }
-      } else {
-        set({ screen: 'setup', isLocked: true })
-      }
-      
-      set({ isInitialized: true })
-      
-      window.api.onDisplayMessage((msg) => {
-        get().showMessage(msg)
-      })
-    } catch (error) {
-      console.error('Initialization error:', error)
-      set({ error: 'Failed to initialize application', screen: 'setup', isInitialized: true })
-    }
-  },
-
-  setConfig: async (newConfig) => {
-    const currentConfig = get().config
-    const updatedConfig = { ...currentConfig, ...newConfig } as AppConfig
-    
-    await window.api.saveConfig(updatedConfig)
-    set({ config: updatedConfig })
-  },
-
-  setDeviceName: async (name) => {
-    const { config } = get()
-    if (config) {
-      await get().setConfig({ ...config, deviceName: name })
-    }
-  },
-
-  registerPendingDevice: async () => {
-    const { deviceCode, config, systemSpecs } = get()
-    
-    if (!deviceCode || !systemSpecs) return false
-    
-    const deviceName = config?.deviceName || `PC-${deviceCode.slice(0, 8)}`
-    
-    const device = await registerPendingDeviceApi(deviceCode, deviceName, systemSpecs)
-    
-    if (device) {
-      set({ device, screen: 'pending' })
-      
-      const channel = subscribeToDevice(deviceCode, async (updatedDevice) => {
-        if (updatedDevice.branch_id) {
-          set({ device: updatedDevice })
-          get().cleanup()
-          await get().initialize()
-        }
-      })
-      
-      set({ channels: [channel] })
-      
-      return true
-    }
-    
-    return false
-  },
-
-  lock: async () => {
-    const { device } = get()
-    
-    // Stop all timers
-    stopSessionTimeSync()
-    stopSessionPolling()
-    
-    set({ 
-      isLocked: true, 
-      screen: 'lock',
-      isAdminUnlocked: false,
-      adminUnlockExpiresAt: null,
-      adminUnlockedBy: null
-    })
-    
-    await window.api.lockScreen()
-    await window.api.hideFloatingTimer()
-    
-    if (device) {
-      await updateDeviceStatus(device.id, 'online', true)
-    }
-  },
-
-  unlock: async () => {
-    const { device, session, timeRemaining, totalSecondsUsed } = get()
-    
-    set({ isLocked: false, screen: 'session' })
-    
-    await window.api.unlockScreen()
-    
-    // Show floating timer
-    if (session) {
-      const displayTime = session.session_type === 'guest' ? timeRemaining : totalSecondsUsed
-      await window.api.updateFloatingTimer(displayTime, session.session_type)
-      await window.api.showFloatingTimer()
-      
-      // START THE COUNTDOWN TIMER
-      
-      // Start session time sync
-      startSessionTimeSync(session.id, () => ({
-        timeRemaining: get().timeRemaining,
-        totalSecondsUsed: get().totalSecondsUsed
-      }), 5000)
-    }
-    
-    if (device) {
-      await updateDeviceStatus(device.id, 'in_use', false)
-    }
-  },
-
-  adminUnlock: async (durationMinutes, unlockedBy) => {
-    const { device } = get()
-    
-    const expiresAt = durationMinutes > 0 
-      ? Date.now() + (durationMinutes * 60 * 1000)
-      : null
-    
-    set({
-      isAdminUnlocked: true,
-      adminUnlockExpiresAt: expiresAt,
-      adminUnlockedBy: unlockedBy,
-      isLocked: false,
-      screen: 'session'
-    })
-    
-    await window.api.unlockScreen()
-    
-    if (device) {
-      await updateDeviceStatus(device.id, 'in_use', false)
-    }
-    
-    // Start expiry check if there's a duration
-    if (expiresAt) {
-      startAdminUnlockExpiryCheck(get)
-    }
-    
-    get().showMessage(
-      durationMinutes > 0 
-        ? `Admin unlocked for ${durationMinutes} minutes by ${unlockedBy}`
-        : `Admin unlocked (unlimited) by ${unlockedBy}`
-    )
-  },
-
-  checkAdminUnlockExpiry: () => {
-    const { isAdminUnlocked, adminUnlockExpiresAt } = get()
-    
-    if (isAdminUnlocked && adminUnlockExpiresAt && Date.now() >= adminUnlockExpiresAt) {
-      get().showMessage('Admin unlock expired. Locking...')
-      setTimeout(() => {
-        get().lock()
-      }, 2000)
-    }
-  },
-
-  startGuestSession: (timeSeconds) => {
-    set({
-      session: {
-        id: 'guest-local',
-        device_id: get().device?.id || '',
-        session_type: 'guest',
-        status: 'active',
-        time_remaining_seconds: timeSeconds,
-        total_seconds_used: 0,
-        total_amount: 0,
-        started_at: new Date().toISOString(),
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      },
-      timeRemaining: timeSeconds,
-      totalSecondsUsed: 0,
-      screen: 'session',
-      isLocked: false
-    })
-  },
-
-  handleMemberLogin: async (username, pin) => {
-    const { device } = get()
-    
-    if (!device?.branches?.organizations) {
-      get().setError('Device not properly configured')
-      return false
-    }
-    
-    const orgId = device.branches.organizations.id
-    const member = await loginMember(orgId, username, pin)
-    
-    if (!member) {
-      get().setError('Invalid username or PIN')
-      return false
-    }
-    
-    if (member.credits <= 0) {
-      get().setError('Insufficient credits. Please top up.')
-      return false
-    }
-    
-    const session = await startMemberSession(device.id, member.id, device.rate_id!)
-    
-    if (!session) {
-      get().setError('Failed to start session')
-      return false
-    }
-    
-    set({
-      session,
-      member,
-      timeRemaining: 0,
-      totalSecondsUsed: 0
-    })
-    
-    await get().unlock()
-    
-    // Start session time sync
-    startSessionTimeSync(session.id, () => ({
-      timeRemaining: get().timeRemaining,
-      totalSecondsUsed: get().totalSecondsUsed
-    }), 5000)
-    
-    return true
-  },
-
-  endCurrentSession: async (terminatedByAdmin = false) => {
-    const { session, device, totalSecondsUsed } = get()
-    
-    // Stop all timers
-    stopSessionTimeSync()
-    stopSessionPolling()
-    
-    // Hide floating timer
-    await window.api.hideFloatingTimer()
-    
-    if (session && session.id !== 'guest-local') {
-      // Final sync of session time before ending
-      await updateSessionTime(session.id, 0, totalSecondsUsed)
-      
-      // End session in database
-      await endSession(session.id, totalSecondsUsed, session.total_amount || 0)
-    }
-    
-    // Update device status back to online (locked)
-    if (device) {
-      await updateDeviceStatus(device.id, 'online', true)
-    }
-    
-    set({
-      session: null,
-      member: null,
-      timeRemaining: 0,
-      totalSecondsUsed: 0,
-      screen: 'lock',
-      isLocked: true
-    })
-    
-    await window.api.lockScreen()
-  },
-
-  decrementTimer: () => {
-    // This function is now only called for manual triggers
-    // The main timer is managed at the store module level
-    const { session, timeRemaining, totalSecondsUsed } = get()
-    
-    if (!session || session.status !== 'active') return
-    
-    const newTimeRemaining = Math.max(0, timeRemaining - 1)
-    const newTotalSeconds = totalSecondsUsed + 1
-    
-    set({
-      timeRemaining: newTimeRemaining,
-      totalSecondsUsed: newTotalSeconds
-    })
-    
-    // Update floating timer window
-    const displayTime = session.session_type === 'guest' ? newTimeRemaining : newTotalSeconds
-    window.api.updateFloatingTimer(displayTime, session.session_type)
-    
-    // End session if time runs out (guest sessions)
-    if (session.session_type === 'guest' && newTimeRemaining <= 0) {
-      get().endCurrentSession()
-    }
-  },
-
-  // Sync session time to database (called periodically)
-  syncSessionTime: async () => {
-    const { session, timeRemaining, totalSecondsUsed } = get()
-    
-    if (!session || session.id === 'guest-local') return
-    
-    await updateSessionTime(session.id, timeRemaining, totalSecondsUsed)
-  },
-
-  chargeCredits: async () => {
-    const { session, member } = get()
-    
-    if (!session || !member || session.session_type !== 'member') {
-      return true
-    }
-    
-    const rate = session.rates
-    if (!rate) return true
-    
-    const chargeAmount = (60 / rate.unit_minutes / 60) * rate.price_per_unit
-    
-    const result = await chargeMemberCredits(member.id, chargeAmount, session.id)
-    
-    if (!result.success) {
-      get().showMessage('Insufficient credits. Session ending...')
-      setTimeout(() => get().endCurrentSession(), 3000)
-      return false
-    }
-    
-    if (result.newBalance !== undefined) {
-      set((state) => ({
-        member: state.member ? { ...state.member, credits: result.newBalance! } : null
-      }))
-    }
-    
-    return true
-  },
-
-  processCommand: async (command) => {
-    const { showMessage, lock, endCurrentSession, adminUnlock } = get()
-    
-    console.log('🎮 Processing command:', command.command_type, command.payload)
-    
-    try {
-      switch (command.command_type) {
-        case 'shutdown':
-          showMessage('System will shutdown in 30 seconds...')
-          // Update device status to offline before shutdown
-          const { device: shutdownDevice } = get()
-          if (shutdownDevice) {
-            await updateDeviceStatus(shutdownDevice.id, 'offline', true)
-          }
-          await window.api.executeCommand('shutdown')
-          await markCommandExecuted(command.id, true)
-          break
-          
-        case 'restart':
-          showMessage('System will restart in 30 seconds...')
-          const { device: restartDevice } = get()
-          if (restartDevice) {
-            await updateDeviceStatus(restartDevice.id, 'offline', true)
-          }
-          await window.api.executeCommand('restart')
-          await markCommandExecuted(command.id, true)
-          break
-          
-        case 'lock':
-          await endCurrentSession(true)
-          await lock()
-          await markCommandExecuted(command.id, true)
-          break
-          
-        case 'unlock':
-          const payload = command.payload as any
-          const sessionId = payload?.session_id
-          const timeRemaining = payload?.time_remaining || 0
-          const sessionType = payload?.session_type || 'guest'
-          
-          console.log('🔓 Processing unlock command:', { sessionId, timeRemaining, sessionType })
-          console.log('🔓 Full payload:', JSON.stringify(payload))
-          
-          const { device: currentDevice } = get()
-          if (currentDevice) {
-            const activeSession = await getActiveSession(currentDevice.id)
-            
-            console.log('🔓 Active session from DB:', JSON.stringify(activeSession, null, 2))
-            
-            if (activeSession) {
-              console.log('✅ Found active session:', activeSession.id)
-              console.log('📋 Session details:', {
-                id: activeSession.id,
-                status: activeSession.status,
-                session_type: activeSession.session_type,
-                time_remaining_seconds: activeSession.time_remaining_seconds,
-                total_seconds_used: activeSession.total_seconds_used
-              })
-              
-              // Use time from session, fallback to command payload, fallback to 0
-              const sessionTime = activeSession.time_remaining_seconds ?? timeRemaining ?? 0
-              
-              console.log('⏱️ Time sources:')
-              console.log('  - activeSession.time_remaining_seconds:', activeSession.time_remaining_seconds)
-              console.log('  - payload.time_remaining:', timeRemaining)
-              console.log('  - Final sessionTime:', sessionTime)
-              
-              set({
-                session: activeSession,
-                member: activeSession.members || null,
-                timeRemaining: sessionTime,
-                totalSecondsUsed: activeSession.total_seconds_used || 0,
-                screen: 'session',
-                isLocked: false
-              })
-              
-              // Verify state was set correctly
-              const newState = get()
-              console.log('✅ State after set:', {
-                hasSession: !!newState.session,
-                sessionStatus: newState.session?.status,
-                timeRemaining: newState.timeRemaining,
-                totalSecondsUsed: newState.totalSecondsUsed,
-                screen: newState.screen
-              })
-              
-              await window.api.unlockScreen()
-              
-              const displayTime = activeSession.session_type === 'guest' ? sessionTime : (activeSession.total_seconds_used || 0)
-              await window.api.updateFloatingTimer(displayTime, activeSession.session_type)
-              await window.api.showFloatingTimer()
-              
-              await updateDeviceStatus(currentDevice.id, 'in_use', false)
-              
-              // START THE COUNTDOWN TIMER
-              
-              // Start session time sync
-              startSessionTimeSync(activeSession.id, () => ({
-                timeRemaining: get().timeRemaining,
-                totalSecondsUsed: get().totalSecondsUsed
-              }), 5000)
-              
-              startSessionPolling(activeSession.id, () => {
-                get().endCurrentSession(true)
-              })
-              
-              showMessage(`Session started! ${activeSession.session_type === 'guest' ? 'Time remaining: ' + Math.floor(sessionTime / 60) + ' minutes' : ''}`)
-            } else {
-              console.log('⚠️ No active session found, but unlock command received')
-            }
-          }
-          
-          await markCommandExecuted(command.id, true)
-          break
-          
-        case 'admin_unlock':
-          const durationMinutes = (command.payload as any)?.duration_minutes || 0
-          const unlockedBy = (command.payload as any)?.unlocked_by || 'Admin'
-          await adminUnlock(durationMinutes, unlockedBy)
-          await markCommandExecuted(command.id, true)
-          break
-          
-        case 'message':
-          const msg = (command.payload as any)?.message || 'Message from admin'
-          showMessage(msg)
-          await markCommandExecuted(command.id, true)
-          break
-          
-        default:
-          await markCommandExecuted(command.id, false, 'Unknown command type')
-      }
-    } catch (error) {
-      console.error('Command execution error:', error)
-      await markCommandExecuted(command.id, false, String(error))
-    }
-  },
-
-  showMessage: (message) => {
-    set({ message })
-    
-    setTimeout(() => {
-      const { message: currentMessage, session, device } = get()
-      if (currentMessage === message) {
-        set({ 
-          message: null,
-          screen: session ? 'session' : (device?.branch_id ? 'lock' : 'setup')
-        })
-      }
-    }, 5000)
-  },
-
-  clearMessage: () => {
-    const { session, device } = get()
-    set({ 
-      message: null,
-      screen: session ? 'session' : (device?.branch_id ? 'lock' : 'setup')
-    })
-  },
-
-  setError: (error) => {
-    set({ error })
-    
-    if (error) {
-      setTimeout(() => {
-        const { error: currentError } = get()
-        if (currentError === error) {
-          set({ error: null })
-        }
-      }, 5000)
-    }
-  },
-
-  setScreen: (screen) => {
-    set({ screen })
-  },
-
-  cleanup: () => {
-    const { channels, device } = get()
-    
-    // Stop all intervals including countdown timer
-    stopSessionTimeSync()
-    stopSessionPolling()
-    stopCommandPolling()
-    stopHeartbeatInterval()
-    stopAdminUnlockExpiryCheck()
-    
-    // Unsubscribe from all channels
-    channels.forEach((channel) => {
-      unsubscribe(channel)
-    })
-    
-    set({ channels: [] })
-    
-    // Mark device as offline on cleanup
-    if (device) {
-      updateDeviceStatus(device.id, 'offline', true)
-    }
-    
-    window.api.removeDisplayMessageListener()
+export function initSupabase(): SupabaseClient {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    throw new Error('Supabase credentials not configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env file.')
   }
-}))
+  
+  if (!supabaseClient) {
+    debugLog('info', 'Initializing Supabase client...')
+    supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      realtime: {
+        params: {
+          eventsPerSecond: 10
+        }
+      }
+    })
+    debugLog('success', 'Supabase client initialized')
+  }
+  return supabaseClient
+}
 
-// Helper functions
-function setupSubscriptions(
-  deviceId: string,
+export function getSupabase(): SupabaseClient {
+  if (!supabaseClient) {
+    return initSupabase()
+  }
+  return supabaseClient
+}
+
+export function isSupabaseConfigured(): boolean {
+  return !!(SUPABASE_URL && SUPABASE_ANON_KEY)
+}
+
+// Device operations
+
+export async function registerPendingDevice(
   deviceCode: string,
-  set: (state: Partial<AppStore> | ((state: AppStore) => Partial<AppStore>)) => void,
-  get: () => AppStore
-): void {
-  const channels: RealtimeChannel[] = []
+  deviceName: string,
+  specs: SystemSpecs
+): Promise<Device | null> {
+  const supabase = getSupabase()
   
-  const deviceChannel = subscribeToDevice(deviceCode, (device) => {
-    set({ device })
-    
-    if (device.is_locked && !get().isLocked && !get().isAdminUnlocked) {
-      get().lock()
+  const { data: existingDevice } = await supabase
+    .from('devices')
+    .select('*')
+    .eq('device_code', deviceCode)
+    .single()
+
+  if (existingDevice) {
+    const { data, error } = await supabase
+      .from('devices')
+      .update({
+        name: deviceName,
+        specs: specs,
+        last_heartbeat: new Date().toISOString()
+      })
+      .eq('device_code', deviceCode)
+      .select('*, rates(*), branches(*)')
+      .single()
+
+    if (error) {
+      console.error('Error updating device:', error)
+      return existingDevice
     }
-  })
-  channels.push(deviceChannel)
-  
-  const sessionChannel = subscribeToSession(deviceId, async (session) => {
-    console.log('Session subscription callback:', session?.status || 'null')
-    
-    if (session && session.status === 'active') {
-      const currentSession = get().session
-      
-      if (!currentSession || currentSession.id !== session.id) {
-        set({ 
-          session,
-          member: session.members || null,
-          timeRemaining: session.time_remaining_seconds || 0,
-          totalSecondsUsed: session.total_seconds_used || 0,
-          screen: 'session'
-        })
-        await get().unlock()
-        
-        startSessionTimeSync(session.id, () => ({
-          timeRemaining: get().timeRemaining,
-          totalSecondsUsed: get().totalSecondsUsed
-        }), 5000)
-        
-        startSessionPolling(session.id, () => {
-          get().endCurrentSession(true)
-        })
-      }
-    } else {
-      const currentSession = get().session
-      if (currentSession && currentSession.id !== 'guest-local') {
-        console.log('Session ended via realtime, terminating locally')
-        await get().endCurrentSession(true)
-      }
-    }
-  })
-  channels.push(sessionChannel)
-  
-  const commandChannel = subscribeToCommands(deviceId, (command) => {
-    get().processCommand(command)
-  })
-  channels.push(commandChannel)
-  
-  set({ channels })
-  
-  startCommandPolling(deviceId, (command) => {
-    get().processCommand(command)
-  }, 3000)
+    return data
+  }
+
+  const { data, error } = await supabase
+    .from('devices')
+    .insert({
+      device_code: deviceCode,
+      name: deviceName,
+      device_type: 'pc',
+      status: 'pending',
+      is_locked: true,
+      specs: specs,
+      last_heartbeat: new Date().toISOString()
+    })
+    .select('*')
+    .single()
+
+  if (error) {
+    console.error('Error registering pending device:', error)
+    return null
+  }
+
+  return data
 }
 
-let heartbeatInterval: NodeJS.Timeout | null = null
+export async function getDeviceByCode(deviceCode: string): Promise<Device | null> {
+  const supabase = getSupabase()
+  
+  const { data, error } = await supabase
+    .from('devices')
+    .select('*, rates(*), branches(*, organizations(*))')
+    .eq('device_code', deviceCode)
+    .single()
 
-function startHeartbeatInterval(deviceId: string, intervalMs: number = 15000): void {
-  if (heartbeatInterval) {
-    clearInterval(heartbeatInterval)
+  if (error) {
+    if (error.code === 'PGRST116') {
+      return null
+    }
+    console.error('Error getting device:', error)
+    return null
+  }
+
+  return data
+}
+
+export async function updateDeviceStatus(
+  deviceId: string,
+  status: Device['status'],
+  isLocked: boolean
+): Promise<boolean> {
+  const supabase = getSupabase()
+  
+  const { error } = await supabase
+    .from('devices')
+    .update({
+      status,
+      is_locked: isLocked,
+      last_heartbeat: new Date().toISOString()
+    })
+    .eq('id', deviceId)
+
+  if (error) {
+    console.error('Error updating device status:', error)
+    return false
+  }
+
+  debugLog('success', `Device status updated: ${status}, locked: ${isLocked}`)
+  return true
+}
+
+export async function updateDeviceSpecs(
+  deviceCode: string,
+  specs: SystemSpecs
+): Promise<boolean> {
+  const supabase = getSupabase()
+  
+  const { error } = await supabase
+    .from('devices')
+    .update({
+      specs: specs,
+      last_heartbeat: new Date().toISOString()
+    })
+    .eq('device_code', deviceCode)
+
+  if (error) {
+    console.error('Error updating device specs:', error)
+    return false
+  }
+
+  return true
+}
+
+export async function sendHeartbeat(deviceId: string): Promise<boolean> {
+  const supabase = getSupabase()
+  
+  const { error } = await supabase
+    .from('devices')
+    .update({
+      last_heartbeat: new Date().toISOString()
+    })
+    .eq('id', deviceId)
+
+  if (error) {
+    console.error('Error sending heartbeat:', error)
+    return false
+  }
+
+  debugLog('info', '💓 Heartbeat sent')
+  return true
+}
+
+// Session operations
+export async function getActiveSession(deviceId: string): Promise<Session | null> {
+  const supabase = getSupabase()
+  
+  debugLog('info', `Fetching active session for device: ${deviceId.slice(0, 8)}...`)
+  
+  const { data, error } = await supabase
+    .from('sessions')
+    .select('*, members(*), rates(*)')
+    .eq('device_id', deviceId)
+    .eq('status', 'active')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .single()
+
+  if (error && error.code !== 'PGRST116') {
+    console.error('Error getting active session:', error)
+    return null
+  }
+
+  if (data) {
+    debugLog('success', `Active session found: ${data.id}, status: ${data.status}, type: ${data.session_type}`)
+    debugLog('info', `Session time_remaining: ${data.time_remaining_seconds}, total_used: ${data.total_seconds_used}`)
+  } else {
+    debugLog('info', 'No active session found')
+  }
+
+  return data
+}
+
+export async function checkSessionStatus(sessionId: string): Promise<Session | null> {
+  const supabase = getSupabase()
+  
+  const { data, error } = await supabase
+    .from('sessions')
+    .select('*, members(*), rates(*)')
+    .eq('id', sessionId)
+    .single()
+
+  if (error) {
+    console.error('Error checking session status:', error)
+    return null
+  }
+
+  return data
+}
+
+// Update session time - called periodically to sync with database
+export async function updateSessionTime(
+  sessionId: string,
+  timeRemainingSeconds: number,
+  totalSecondsUsed: number
+): Promise<boolean> {
+  const supabase = getSupabase()
+  
+  const { error } = await supabase
+    .from('sessions')
+    .update({
+      time_remaining_seconds: timeRemainingSeconds,
+      total_seconds_used: totalSecondsUsed,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', sessionId)
+
+  if (error) {
+    console.error('Error updating session time:', error)
+    return false
+  }
+
+  return true
+}
+
+export async function updateSessionTimeRemaining(
+  sessionId: string,
+  timeRemainingSeconds: number
+): Promise<boolean> {
+  const supabase = getSupabase()
+  
+  const { error } = await supabase
+    .from('sessions')
+    .update({
+      time_remaining_seconds: timeRemainingSeconds
+    })
+    .eq('id', sessionId)
+
+  if (error) {
+    console.error('Error updating session time:', error)
+    return false
+  }
+
+  return true
+}
+
+export async function endSession(
+  sessionId: string,
+  totalSecondsUsed: number,
+  totalAmount: number
+): Promise<boolean> {
+  const supabase = getSupabase()
+  
+  const { error } = await supabase
+    .from('sessions')
+    .update({
+      status: 'completed',
+      ended_at: new Date().toISOString(),
+      total_seconds_used: totalSecondsUsed,
+      total_amount: totalAmount,
+      time_remaining_seconds: 0
+    })
+    .eq('id', sessionId)
+
+  if (error) {
+    console.error('Error ending session:', error)
+    return false
+  }
+
+  debugLog('success', 'Session ended')
+  return true
+}
+
+// Member operations
+export async function loginMember(
+  orgId: string,
+  username: string,
+  pinCode: string
+): Promise<Member | null> {
+  const supabase = getSupabase()
+  
+  const { data, error } = await supabase
+    .from('members')
+    .select('*')
+    .eq('org_id', orgId)
+    .eq('username', username)
+    .eq('pin_code', pinCode)
+    .eq('is_active', true)
+    .single()
+
+  if (error) {
+    console.error('Error logging in member:', error)
+    return null
+  }
+
+  return data
+}
+
+export async function startMemberSession(
+  deviceId: string,
+  memberId: string,
+  rateId: string
+): Promise<Session | null> {
+  const supabase = getSupabase()
+  
+  const { data, error } = await supabase
+    .from('sessions')
+    .insert({
+      device_id: deviceId,
+      member_id: memberId,
+      rate_id: rateId,
+      session_type: 'member',
+      status: 'active',
+      started_at: new Date().toISOString(),
+      total_seconds_used: 0,
+      total_amount: 0
+    })
+    .select('*, members(*), rates(*)')
+    .single()
+
+  if (error) {
+    console.error('Error starting member session:', error)
+    return null
+  }
+
+  return data
+}
+
+export async function chargeMemberCredits(
+  memberId: string,
+  amount: number,
+  sessionId: string
+): Promise<{ success: boolean; newBalance?: number }> {
+  const supabase = getSupabase()
+  
+  // Get current balance
+  const { data: member, error: memberError } = await supabase
+    .from('members')
+    .select('credits')
+    .eq('id', memberId)
+    .single()
+
+  if (memberError || !member) {
+    console.error('Error getting member credits:', memberError)
+    return { success: false }
+  }
+
+  if (member.credits < amount) {
+    return { success: false }
+  }
+
+  const newBalance = member.credits - amount
+
+  // Update member credits
+  const { error: updateError } = await supabase
+    .from('members')
+    .update({ credits: newBalance })
+    .eq('id', memberId)
+
+  if (updateError) {
+    console.error('Error updating credits:', updateError)
+    return { success: false }
+  }
+
+  // Update session total amount
+  const { error: sessionError } = await supabase
+    .rpc('increment_session_amount', { 
+      session_id: sessionId, 
+      amount: amount 
+    })
+
+  if (sessionError) {
+    // Try direct update if RPC doesn't exist
+    await supabase
+      .from('sessions')
+      .update({ 
+        total_amount: amount // This would need to be accumulative
+      })
+      .eq('id', sessionId)
+  }
+
+  return { success: true, newBalance }
+}
+
+// Command operations
+export async function getPendingCommands(deviceId: string): Promise<DeviceCommand[]> {
+  const supabase = getSupabase()
+  
+  const { data, error } = await supabase
+    .from('device_commands')
+    .select('*')
+    .eq('device_id', deviceId)
+    .is('executed_at', null)
+    .order('created_at', { ascending: true })
+
+  if (error) {
+    console.error('Error getting pending commands:', error)
+    return []
+  }
+
+  return data || []
+}
+
+export async function markCommandExecuted(
+  commandId: string,
+  success: boolean,
+  errorMessage?: string
+): Promise<boolean> {
+  const supabase = getSupabase()
+  
+  debugLog('info', `Marking command ${commandId} as ${success ? 'executed' : 'failed'}`)
+  
+  const { error } = await supabase
+    .from('device_commands')
+    .update({
+      status: success ? 'executed' : 'failed',
+      executed_at: new Date().toISOString(),
+      error_message: errorMessage || null
+    })
+    .eq('id', commandId)
+
+  if (error) {
+    console.error('Error marking command executed:', error)
+    debugLog('error', `Failed to mark command: ${error.message}`)
+    return false
+  }
+
+  debugLog('success', `Command ${commandId} marked as ${success ? 'executed' : 'failed'}`)
+  return true
+}
+
+// Rate operations
+export async function getRates(branchId: string): Promise<Rate[]> {
+  const supabase = getSupabase()
+  
+  const { data, error } = await supabase
+    .from('rates')
+    .select('*')
+    .eq('branch_id', branchId)
+    .eq('is_active', true)
+    .order('is_default', { ascending: false })
+
+  if (error) {
+    console.error('Error getting rates:', error)
+    return []
+  }
+
+  return data || []
+}
+
+// Branch operations
+export async function getBranches(orgId: string): Promise<Branch[]> {
+  const supabase = getSupabase()
+  
+  const { data, error } = await supabase
+    .from('branches')
+    .select('*, organizations(*)')
+    .eq('org_id', orgId)
+
+  if (error) {
+    console.error('Error getting branches:', error)
+    return []
+  }
+
+  return data || []
+}
+
+export async function getBranchById(branchId: string): Promise<Branch | null> {
+  const supabase = getSupabase()
+  
+  const { data, error } = await supabase
+    .from('branches')
+    .select('*, organizations(*)')
+    .eq('id', branchId)
+    .single()
+
+  if (error) {
+    console.error('Error getting branch:', error)
+    return null
+  }
+
+  return data
+}
+
+// ============================================
+// REALTIME SUBSCRIPTIONS 
+// ============================================
+
+export function subscribeToDevice(
+  deviceCode: string,
+  callback: (device: Device) => void
+): RealtimeChannel {
+  const supabase = getSupabase()
+  
+  debugLog('info', `Subscribing to device: ${deviceCode}`)
+  
+  const channel = supabase
+    .channel('device-changes')
+    .on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'devices'
+      },
+      (payload) => {
+        const device = payload.new as Device
+        if (device.device_code === deviceCode) {
+          debugLog('command', `Device update received for ${deviceCode}`)
+          callback(device)
+        }
+      }
+    )
+    .subscribe((status, err) => {
+      if (status === 'SUBSCRIBED') {
+        debugLog('success', `Device channel SUBSCRIBED`)
+      } else if (status === 'CHANNEL_ERROR') {
+        debugLog('error', `Device channel ERROR: ${err?.message || 'Unknown error'}`)
+      } else if (status === 'TIMED_OUT') {
+        debugLog('error', `Device channel TIMED_OUT`)
+      } else if (status === 'CLOSED') {
+        debugLog('info', `Device channel CLOSED`)
+      } else {
+        debugLog('info', `Device channel status: ${status}`)
+      }
+    })
+
+  return channel
+}
+
+export function subscribeToSession(
+  deviceId: string,
+  callback: (session: Session | null) => void
+): RealtimeChannel {
+  const supabase = getSupabase()
+  
+  debugLog('info', `Subscribing to sessions for device: ${deviceId.slice(0, 8)}...`)
+  
+  const channel = supabase
+    .channel('session-changes')
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'sessions'
+      },
+      async (payload) => {
+        const session = payload.new as Session
+        const oldSession = payload.old as Session
+        
+        if (session && session.device_id === deviceId) {
+          debugLog('command', `Session ${payload.eventType} for this device, status: ${session.status}`)
+          
+          if (session.status === 'active') {
+            const fullSession = await getActiveSession(deviceId)
+            callback(fullSession)
+          } else {
+            debugLog('info', `Session ended with status: ${session.status}`)
+            callback(null)
+          }
+        } else if (payload.eventType === 'DELETE' && oldSession?.device_id === deviceId) {
+          debugLog('info', 'Session deleted for this device')
+          callback(null)
+        }
+      }
+    )
+    .subscribe((status, err) => {
+      if (status === 'SUBSCRIBED') {
+        debugLog('success', `Sessions channel SUBSCRIBED`)
+      } else if (status === 'CHANNEL_ERROR') {
+        debugLog('error', `Sessions channel ERROR: ${err?.message || 'Unknown error'}`)
+      } else if (status === 'TIMED_OUT') {
+        debugLog('error', `Sessions channel TIMED_OUT`)
+      } else {
+        debugLog('info', `Sessions channel status: ${status}`)
+      }
+    })
+
+  return channel
+}
+
+export function subscribeToCommands(
+  deviceId: string,
+  callback: (command: DeviceCommand) => void
+): RealtimeChannel {
+  const supabase = getSupabase()
+  
+  debugLog('info', `Subscribing to commands for device: ${deviceId.slice(0, 8)}...`)
+  
+  const channel = supabase
+    .channel('command-changes')
+    .on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'device_commands'
+      },
+      (payload) => {
+        const command = payload.new as DeviceCommand
+        if (command.device_id === deviceId) {
+          debugLog('command', `🎮 COMMAND RECEIVED: ${command.command_type}`)
+          debugLog('info', `Command ID: ${command.id}`)
+          debugLog('info', `Payload: ${JSON.stringify(command.payload)}`)
+          callback(command)
+        }
+      }
+    )
+    .subscribe((status, err) => {
+      if (status === 'SUBSCRIBED') {
+        debugLog('success', `Commands channel SUBSCRIBED ✓`)
+      } else if (status === 'CHANNEL_ERROR') {
+        debugLog('error', `Commands channel ERROR: ${err?.message || 'Unknown error'}`)
+      } else if (status === 'TIMED_OUT') {
+        debugLog('error', `Commands channel TIMED_OUT`)
+      } else if (status === 'CLOSED') {
+        debugLog('info', `Commands channel CLOSED`)
+      } else {
+        debugLog('info', `Commands channel status: ${status}`)
+      }
+    })
+
+  return channel
+}
+
+export function subscribeToMemberCredits(
+  memberId: string,
+  callback: (credits: number) => void
+): RealtimeChannel {
+  const supabase = getSupabase()
+  
+  debugLog('info', `Subscribing to member credits: ${memberId.slice(0, 8)}...`)
+  
+  const channel = supabase
+    .channel('member-changes')
+    .on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'members'
+      },
+      (payload) => {
+        const member = payload.new as Member
+        if (member.id === memberId) {
+          debugLog('command', `Member credits update: ${member.credits}`)
+          callback(member.credits)
+        }
+      }
+    )
+    .subscribe((status, err) => {
+      if (status === 'SUBSCRIBED') {
+        debugLog('success', `Member credits channel SUBSCRIBED`)
+      } else if (status === 'CHANNEL_ERROR') {
+        debugLog('error', `Member credits channel ERROR: ${err?.message || 'Unknown error'}`)
+      } else {
+        debugLog('info', `Member credits channel status: ${status}`)
+      }
+    })
+
+  return channel
+}
+
+export function unsubscribe(channel: RealtimeChannel): void {
+  const supabase = getSupabase()
+  supabase.removeChannel(channel)
+  debugLog('info', 'Channel unsubscribed')
+}
+
+// ============================================
+// POLLING FALLBACK
+// ============================================
+
+let pollingInterval: ReturnType<typeof setInterval> | null = null
+
+export function startCommandPolling(
+  deviceId: string, 
+  callback: (command: DeviceCommand) => void,
+  intervalMs: number = 3000
+): void {
+  debugLog('info', `🔄 Starting command polling (every ${intervalMs}ms)`)
+  
+  if (pollingInterval) {
+    clearInterval(pollingInterval)
   }
   
-  // Send initial heartbeat
-  sendHeartbeat(deviceId)
+  fetchAndProcessCommands(deviceId, callback)
   
-  heartbeatInterval = setInterval(() => {
-    sendHeartbeat(deviceId)
+  pollingInterval = setInterval(() => {
+    fetchAndProcessCommands(deviceId, callback)
   }, intervalMs)
 }
 
-function stopHeartbeatInterval(): void {
-  if (heartbeatInterval) {
-    clearInterval(heartbeatInterval)
-    heartbeatInterval = null
+async function fetchAndProcessCommands(
+  deviceId: string,
+  callback: (command: DeviceCommand) => void
+): Promise<void> {
+  const commands = await getPendingCommands(deviceId)
+  for (const command of commands) {
+    debugLog('command', `[POLL] Processing command: ${command.command_type}`)
+    callback(command)
   }
 }
 
-let adminUnlockExpiryInterval: NodeJS.Timeout | null = null
+export function stopCommandPolling(): void {
+  if (pollingInterval) {
+    clearInterval(pollingInterval)
+    pollingInterval = null
+    debugLog('info', 'Command polling stopped')
+  }
+}
 
-function startAdminUnlockExpiryCheck(get: () => AppStore): void {
-  if (adminUnlockExpiryInterval) {
-    clearInterval(adminUnlockExpiryInterval)
+// ============================================
+// SESSION STATUS POLLING
+// ============================================
+
+let sessionPollingInterval: ReturnType<typeof setInterval> | null = null
+
+export function startSessionPolling(
+  sessionId: string,
+  onSessionEnded: () => void,
+  intervalMs: number = 5000
+): void {
+  debugLog('info', `🔄 Starting session polling (every ${intervalMs}ms)`)
+  
+  if (sessionPollingInterval) {
+    clearInterval(sessionPollingInterval)
   }
   
-  adminUnlockExpiryInterval = setInterval(() => {
-    get().checkAdminUnlockExpiry()
-  }, 10000)
-}
-
-function stopAdminUnlockExpiryCheck(): void {
-  if (adminUnlockExpiryInterval) {
-    clearInterval(adminUnlockExpiryInterval)
-    adminUnlockExpiryInterval = null
-  }
-}
-
-// Handle window/app closing - update device status
-window.addEventListener('beforeunload', () => {
-  const { device } = useAppStore.getState()
-  if (device) {
-    // Use sendBeacon for reliable delivery on page unload
-    const url = `${import.meta.env.VITE_SUPABASE_URL}/rest/v1/devices?id=eq.${device.id}`
-    const data = JSON.stringify({ status: 'offline', is_locked: true })
+  sessionPollingInterval = setInterval(async () => {
+    const session = await checkSessionStatus(sessionId)
     
-    navigator.sendBeacon(url, new Blob([data], { type: 'application/json' }))
+    if (!session || session.status !== 'active') {
+      debugLog('command', `[POLL] Session no longer active: ${session?.status || 'not found'}`)
+      onSessionEnded()
+      stopSessionPolling()
+    }
+  }, intervalMs)
+}
+
+export function stopSessionPolling(): void {
+  if (sessionPollingInterval) {
+    clearInterval(sessionPollingInterval)
+    sessionPollingInterval = null
+    debugLog('info', 'Session polling stopped')
   }
-})
+}
+
+// ============================================
+// SESSION TIME SYNC (NEW)
+// ============================================
+
+let sessionTimeSyncInterval: ReturnType<typeof setInterval> | null = null
+
+export function startSessionTimeSync(
+  sessionId: string,
+  getTimeData: () => { timeRemaining: number; totalSecondsUsed: number },
+  intervalMs: number = 10000 // Sync every 10 seconds
+): void {
+  debugLog('info', `🔄 Starting session time sync (every ${intervalMs}ms)`)
+  
+  if (sessionTimeSyncInterval) {
+    clearInterval(sessionTimeSyncInterval)
+  }
+  
+  sessionTimeSyncInterval = setInterval(async () => {
+    const { timeRemaining, totalSecondsUsed } = getTimeData()
+    const success = await updateSessionTime(sessionId, timeRemaining, totalSecondsUsed)
+    if (success) {
+      debugLog('info', `⏱️ Session time synced: ${timeRemaining}s remaining, ${totalSecondsUsed}s used`)
+    }
+  }, intervalMs)
+}
+
+export function stopSessionTimeSync(): void {
+  if (sessionTimeSyncInterval) {
+    clearInterval(sessionTimeSyncInterval)
+    sessionTimeSyncInterval = null
+    debugLog('info', 'Session time sync stopped')
+  }
+}
