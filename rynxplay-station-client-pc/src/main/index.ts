@@ -876,7 +876,6 @@ function createFloatingWindow(): void {
     </body>
     </html>
   `
-      </div>
   floatingWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(floatingHTML)}`)
 
   floatingWindow.on('close', (event) => {
