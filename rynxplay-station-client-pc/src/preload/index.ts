@@ -92,6 +92,20 @@ const api = {
   // Timer update listener (for floating window)
   onTimerUpdate: (callback: (data: { time: number, sessionType: string }) => void): void => {
     ipcRenderer.on('update-timer', (_event, data) => callback(data))
+  },
+
+  // Timer ended listener (floating timer reached zero)
+  onTimerEnded: (callback: () => void): void => {
+    ipcRenderer.on('timer-ended', () => callback())
+  },
+
+  removeTimerEndedListener: (): void => {
+    ipcRenderer.removeAllListeners('timer-ended')
+  },
+
+  // Stop the floating timer
+  stopFloatingTimer: (): void => {
+    ipcRenderer.send('stop-floating-timer')
   }
 }
 

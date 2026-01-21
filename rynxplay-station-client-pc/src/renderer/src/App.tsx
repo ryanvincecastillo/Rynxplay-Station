@@ -30,7 +30,7 @@ function LoadingScreen() {
 }
 
 function App() {
-  const { screen, isInitialized, session, message, initialize, cleanup } = useAppStore()
+  const { screen, isInitialized, session, message, initialize, cleanup, endCurrentSession } = useAppStore()
 
   // Initialize on mount
   useEffect(() => {
@@ -41,6 +41,21 @@ function App() {
       cleanup()
     }
   }, [initialize, cleanup])
+
+  // Listen for timer-ended from main process (floating timer reached zero)
+  useEffect(() => {
+    const handleTimerEnded = () => {
+      console.log('⏱️ Received timer-ended from main process')
+      endCurrentSession()
+    }
+
+    // Add listener via preload API
+    window.api?.onTimerEnded?.(handleTimerEnded)
+
+    return () => {
+      window.api?.removeTimerEndedListener?.()
+    }
+  }, [endCurrentSession])
 
   // Show loading screen while initializing
   if (!isInitialized) {

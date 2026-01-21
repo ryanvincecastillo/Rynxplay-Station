@@ -464,7 +464,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     stopSessionTimeSync()
     stopSessionPolling()
     
-    // Hide floating timer
+    // Stop and hide floating timer
+    window.api.stopFloatingTimer?.()
     await window.api.hideFloatingTimer()
     
     if (session && session.id !== 'guest-local') {

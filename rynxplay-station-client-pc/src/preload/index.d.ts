@@ -77,6 +77,9 @@ interface Api {
   onDisplayMessage: (callback: (message: string) => void) => void
   removeDisplayMessageListener: () => void
   onTimerUpdate: (callback: (data: { time: number, sessionType: string }) => void) => void
+  onTimerEnded: (callback: () => void) => void
+  removeTimerEndedListener: () => void
+  stopFloatingTimer: () => void
 }
 
 declare global {

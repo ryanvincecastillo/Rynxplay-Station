@@ -632,9 +632,9 @@ function createFloatingWindow(): void {
   const { width: screenWidth } = primaryDisplay.workAreaSize
 
   floatingWindow = new BrowserWindow({
-    width: 280,
-    height: 100,
-    x: screenWidth - 300,
+    width: 300,
+    height: 120,
+    x: screenWidth - 320,
     y: 20,
     show: false,
     frame: false,
@@ -669,12 +669,19 @@ function createFloatingWindow(): void {
           user-select: none;
         }
         .container {
-          background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.95) 100%);
+          background: linear-gradient(135deg, rgba(15, 23, 42, 0.98) 0%, rgba(30, 41, 59, 0.98) 100%);
           border: 1px solid rgba(0, 212, 245, 0.3);
-          border-radius: 16px;
-          padding: 16px 20px;
+          border-radius: 20px;
+          padding: 16px 24px;
           backdrop-filter: blur(20px);
-          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+        }
+        .container.warning {
+          border-color: rgba(245, 158, 11, 0.5);
+        }
+        .container.danger {
+          border-color: rgba(239, 68, 68, 0.5);
+          animation: border-pulse 1s infinite;
         }
         .header {
           display: flex;
@@ -683,41 +690,60 @@ function createFloatingWindow(): void {
           margin-bottom: 8px;
         }
         .title {
-          font-size: 11px;
+          font-size: 12px;
           font-weight: 600;
-          color: rgba(148, 163, 184, 0.8);
+          color: rgba(148, 163, 184, 0.9);
           text-transform: uppercase;
-          letter-spacing: 1px;
+          letter-spacing: 1.5px;
         }
         .session-type {
           font-size: 10px;
-          padding: 2px 8px;
-          border-radius: 10px;
+          padding: 3px 10px;
+          border-radius: 12px;
+          font-weight: 600;
+        }
+        .session-type.guest {
           background: rgba(0, 212, 245, 0.2);
           color: #00d4f5;
         }
+        .session-type.member {
+          background: rgba(16, 185, 129, 0.2);
+          color: #10b981;
+        }
         .timer {
-          font-size: 32px;
+          font-size: 42px;
           font-weight: 700;
           font-family: 'Consolas', 'Monaco', monospace;
           color: #00d4f5;
-          text-shadow: 0 0 20px rgba(0, 212, 245, 0.5);
+          text-shadow: 0 0 30px rgba(0, 212, 245, 0.4);
           text-align: center;
+          letter-spacing: 2px;
         }
-        .timer.warning { color: #f59e0b; text-shadow: 0 0 20px rgba(245, 158, 11, 0.5); }
-        .timer.danger { color: #ef4444; text-shadow: 0 0 20px rgba(239, 68, 68, 0.5); animation: pulse 1s infinite; }
+        .timer.member {
+          color: #10b981;
+          text-shadow: 0 0 30px rgba(16, 185, 129, 0.4);
+        }
+        .timer.warning { 
+          color: #f59e0b; 
+          text-shadow: 0 0 30px rgba(245, 158, 11, 0.5); 
+        }
+        .timer.danger { 
+          color: #ef4444; 
+          text-shadow: 0 0 30px rgba(239, 68, 68, 0.5); 
+          animation: pulse 1s infinite; 
+        }
         .buttons {
           display: flex;
           gap: 8px;
-          margin-top: 8px;
+          margin-top: 10px;
           -webkit-app-region: no-drag;
         }
         .btn {
           flex: 1;
-          padding: 6px;
+          padding: 8px;
           border: none;
-          border-radius: 8px;
-          font-size: 10px;
+          border-radius: 10px;
+          font-size: 11px;
           font-weight: 600;
           cursor: pointer;
           transition: all 0.2s;
@@ -727,55 +753,130 @@ function createFloatingWindow(): void {
           color: #94a3b8;
         }
         .btn-hide:hover { background: rgba(100, 116, 139, 0.5); }
+        .btn-session {
+          background: rgba(0, 212, 245, 0.2);
+          color: #00d4f5;
+        }
+        .btn-session:hover { background: rgba(0, 212, 245, 0.3); }
         @keyframes pulse {
           0%, 100% { opacity: 1; }
-          50% { opacity: 0.5; }
+          50% { opacity: 0.6; }
+        }
+        @keyframes border-pulse {
+          0%, 100% { border-color: rgba(239, 68, 68, 0.5); }
+          50% { border-color: rgba(239, 68, 68, 0.2); }
         }
       </style>
     </head>
     <body>
-      <div class="container">
+      <div class="container" id="container">
         <div class="header">
           <span class="title">RYNXPLAY</span>
-          <span class="session-type" id="sessionType">GUEST</span>
+          <span class="session-type guest" id="sessionType">GUEST</span>
         </div>
         <div class="timer" id="timer">00:00:00</div>
         <div class="buttons">
+          <button class="btn btn-session" onclick="showSession()">Session</button>
           <button class="btn btn-hide" onclick="hideTimer()">Hide</button>
         </div>
       </div>
       <script>
         const { ipcRenderer } = require('electron');
         
+        // Timer state
+        let currentTime = 0;
+        let sessionType = 'guest';
+        let timerInterval = null;
+        
         function formatTime(seconds) {
-          const h = Math.floor(seconds / 3600);
-          const m = Math.floor((seconds % 3600) / 60);
-          const s = seconds % 60;
-          return [h, m, s].map(v => v.toString().padStart(2, '0')).join(':');
+          const s = Math.max(0, Math.floor(seconds));
+          const h = Math.floor(s / 3600);
+          const m = Math.floor((s % 3600) / 60);
+          const sec = s % 60;
+          return [h, m, sec].map(v => v.toString().padStart(2, '0')).join(':');
+        }
+        
+        function updateDisplay() {
+          const timerEl = document.getElementById('timer');
+          const typeEl = document.getElementById('sessionType');
+          const containerEl = document.getElementById('container');
+          
+          timerEl.textContent = formatTime(currentTime);
+          
+          // Session type styling
+          typeEl.textContent = sessionType === 'member' ? 'MEMBER' : 'GUEST';
+          typeEl.className = 'session-type ' + sessionType;
+          
+          // Timer and container styling based on warning level
+          timerEl.className = 'timer';
+          containerEl.className = 'container';
+          
+          if (sessionType === 'guest') {
+            if (currentTime <= 60) {
+              timerEl.classList.add('danger');
+              containerEl.classList.add('danger');
+            } else if (currentTime <= 300) {
+              timerEl.classList.add('warning');
+              containerEl.classList.add('warning');
+            }
+          } else {
+            timerEl.classList.add('member');
+          }
+        }
+        
+        function startTimer() {
+          // Clear existing interval
+          if (timerInterval) {
+            clearInterval(timerInterval);
+          }
+          
+          // Start countdown/countup
+          timerInterval = setInterval(() => {
+            if (sessionType === 'guest') {
+              // Countdown for guest
+              currentTime = Math.max(0, currentTime - 1);
+              if (currentTime <= 0) {
+                // Time's up - notify main process
+                ipcRenderer.send('timer-ended');
+              }
+            } else {
+              // Count up for member (elapsed time)
+              currentTime++;
+            }
+            updateDisplay();
+          }, 1000);
         }
         
         function hideTimer() {
           ipcRenderer.send('hide-floating-timer');
         }
         
-        ipcRenderer.on('update-timer', (event, { time, sessionType }) => {
-          const timerEl = document.getElementById('timer');
-          const typeEl = document.getElementById('sessionType');
-          
-          timerEl.textContent = formatTime(time);
-          typeEl.textContent = sessionType === 'member' ? 'MEMBER' : 'GUEST';
-          
-          timerEl.className = 'timer';
-          if (sessionType === 'guest') {
-            if (time <= 60) timerEl.classList.add('danger');
-            else if (time <= 300) timerEl.classList.add('warning');
+        function showSession() {
+          ipcRenderer.send('show-session-screen');
+        }
+        
+        // Receive timer updates from main process
+        ipcRenderer.on('update-timer', (event, { time, sessionType: type }) => {
+          currentTime = time;
+          sessionType = type;
+          updateDisplay();
+          startTimer();
+        });
+        
+        // Stop timer when session ends
+        ipcRenderer.on('stop-timer', () => {
+          if (timerInterval) {
+            clearInterval(timerInterval);
+            timerInterval = null;
           }
+          currentTime = 0;
+          updateDisplay();
         });
       </script>
     </body>
     </html>
   `
-
+      </div>
   floatingWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(floatingHTML)}`)
 
   floatingWindow.on('close', (event) => {
@@ -1006,6 +1107,29 @@ function setupIpcHandlers(): void {
   ipcMain.handle('show-floating-timer', () => { showFloatingTimer(); return true })
   ipcMain.handle('hide-floating-timer', () => { hideFloatingTimer(); return true })
   ipcMain.on('hide-floating-timer', () => hideFloatingTimer())
+  
+  // Show session screen in main window
+  ipcMain.on('show-session-screen', () => {
+    if (mainWindow && !isLocked) {
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  })
+  
+  // Timer ended - notify renderer to end session
+  ipcMain.on('timer-ended', () => {
+    console.log('⏱️ Floating timer reached zero!')
+    if (mainWindow) {
+      mainWindow.webContents.send('timer-ended')
+    }
+  })
+
+  // Stop the floating timer countdown
+  ipcMain.on('stop-floating-timer', () => {
+    if (floatingWindow) {
+      floatingWindow.webContents.send('stop-timer')
+    }
+  })
 
   ipcMain.handle('execute-command', (_event, command: string) => {
     return new Promise((resolve, reject) => {
