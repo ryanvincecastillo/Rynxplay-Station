@@ -633,7 +633,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
               await window.api.unlockScreen()
               
               const displayTime = activeSession.session_type === 'guest' ? sessionTime : (activeSession.total_seconds_used || 0)
-              await window.api.updateFloatingTimer(displayTime, activeSession.session_type)
+              const elapsedTime = activeSession.total_seconds_used || 0
+              await window.api.updateFloatingTimer(displayTime, activeSession.session_type, elapsedTime)
               await window.api.showFloatingTimer()
               
               await updateDeviceStatus(currentDevice.id, 'in_use', false)

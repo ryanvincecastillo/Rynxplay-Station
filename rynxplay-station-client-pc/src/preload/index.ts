@@ -60,8 +60,8 @@ const api = {
   getLockStatus: (): Promise<boolean> => ipcRenderer.invoke('get-lock-status'),
 
   // Floating timer
-  updateFloatingTimer: (time: number, sessionType: 'guest' | 'member'): Promise<boolean> =>
-    ipcRenderer.invoke('update-floating-timer', time, sessionType),
+  updateFloatingTimer: (time: number, sessionType: 'guest' | 'member', elapsed?: number): Promise<boolean> =>
+    ipcRenderer.invoke('update-floating-timer', time, sessionType, elapsed || 0),
   showFloatingTimer: (): Promise<boolean> => ipcRenderer.invoke('show-floating-timer'),
   hideFloatingTimer: (): Promise<boolean> => ipcRenderer.invoke('hide-floating-timer'),
 
@@ -101,6 +101,15 @@ const api = {
 
   removeTimerEndedListener: (): void => {
     ipcRenderer.removeAllListeners('timer-ended')
+  },
+
+  // Timer sync listener (floating timer sends time updates)
+  onTimerSync: (callback: (data: { timeRemaining: number, totalSecondsUsed: number, sessionType: string }) => void): void => {
+    ipcRenderer.on('timer-sync', (_event, data) => callback(data))
+  },
+
+  removeTimerSyncListener: (): void => {
+    ipcRenderer.removeAllListeners('timer-sync')
   },
 
   // Stop the floating timer

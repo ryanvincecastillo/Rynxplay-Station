@@ -632,8 +632,8 @@ function createFloatingWindow(): void {
   const { width: screenWidth } = primaryDisplay.workAreaSize
 
   floatingWindow = new BrowserWindow({
-    width: 300,
-    height: 160,
+    width: 310,
+    height: 150,
     x: screenWidth - 320,
     y: 20,
     show: false,
@@ -785,8 +785,10 @@ function createFloatingWindow(): void {
         
         // Timer state
         let currentTime = 0;
+        let elapsedTime = 0;
         let sessionType = 'guest';
         let timerInterval = null;
+        let syncCounter = 0;
         
         function formatTime(seconds) {
           const s = Math.max(0, Math.floor(seconds));
@@ -801,7 +803,8 @@ function createFloatingWindow(): void {
           const typeEl = document.getElementById('sessionType');
           const containerEl = document.getElementById('container');
           
-          timerEl.textContent = formatTime(currentTime);
+          // Display remaining time for guest, elapsed for member
+          timerEl.textContent = formatTime(sessionType === 'guest' ? currentTime : elapsedTime);
           
           // Session type styling
           typeEl.textContent = sessionType === 'member' ? 'MEMBER' : 'GUEST';
@@ -825,28 +828,43 @@ function createFloatingWindow(): void {
         }
         
         function startTimer() {
-          console.log('🎯 startTimer called, currentTime:', currentTime);
+          console.log('🎯 startTimer called, currentTime:', currentTime, 'elapsed:', elapsedTime);
           
           // Clear existing interval
           if (timerInterval) {
             clearInterval(timerInterval);
           }
           
+          syncCounter = 0;
+          
           // Start countdown/countup
           timerInterval = setInterval(() => {
+            // Always increment elapsed time
+            elapsedTime++;
+            
             if (sessionType === 'guest') {
               // Countdown for guest
               currentTime = Math.max(0, currentTime - 1);
+              
               if (currentTime <= 0) {
                 // Time's up - notify main process
                 console.log('🎯 Time up! Sending timer-ended');
                 ipcRenderer.send('timer-ended');
                 clearInterval(timerInterval);
               }
-            } else {
-              // Count up for member (elapsed time)
-              currentTime++;
             }
+            
+            // Sync to main process every 5 seconds
+            syncCounter++;
+            if (syncCounter >= 5) {
+              syncCounter = 0;
+              ipcRenderer.send('timer-sync', { 
+                timeRemaining: currentTime, 
+                totalSecondsUsed: elapsedTime,
+                sessionType: sessionType 
+              });
+            }
+            
             updateDisplay();
           }, 1000);
           
@@ -868,6 +886,7 @@ function createFloatingWindow(): void {
           console.log('🎯 Received update-timer:', data);
           currentTime = data.time;
           sessionType = data.sessionType;
+          elapsedTime = data.elapsed || 0;
           updateDisplay();
           startTimer();
         });
@@ -880,6 +899,7 @@ function createFloatingWindow(): void {
             timerInterval = null;
           }
           currentTime = 0;
+          elapsedTime = 0;
           updateDisplay();
         });
         
@@ -913,15 +933,15 @@ function hideFloatingTimer(): void {
   }
 }
 
-function updateFloatingTimer(time: number, sessionType: 'guest' | 'member'): void {
-  console.log(`🕐 updateFloatingTimer called: time=${time}, type=${sessionType}, isLocked=${isLocked}, hasWindow=${!!floatingWindow}`)
+function updateFloatingTimer(time: number, sessionType: 'guest' | 'member', elapsed: number = 0): void {
+  console.log(`🕐 updateFloatingTimer: time=${time}, type=${sessionType}, elapsed=${elapsed}`)
   
   currentSessionTime = time
   currentSessionType = sessionType
   
   if (floatingWindow && !isLocked) {
     console.log('🕐 Sending update-timer to floating window')
-    floatingWindow.webContents.send('update-timer', { time, sessionType })
+    floatingWindow.webContents.send('update-timer', { time, sessionType, elapsed })
   } else {
     console.log('🕐 NOT sending - floatingWindow:', !!floatingWindow, 'isLocked:', isLocked)
   }
@@ -1118,8 +1138,8 @@ function setupIpcHandlers(): void {
   })
 
   ipcMain.handle('get-lock-status', () => isLocked)
-  ipcMain.handle('update-floating-timer', (_event, time: number, sessionType: 'guest' | 'member') => {
-    updateFloatingTimer(time, sessionType)
+  ipcMain.handle('update-floating-timer', (_event, time: number, sessionType: 'guest' | 'member', elapsed: number = 0) => {
+    updateFloatingTimer(time, sessionType, elapsed)
     return true
   })
   ipcMain.handle('show-floating-timer', () => { showFloatingTimer(); return true })
@@ -1139,6 +1159,15 @@ function setupIpcHandlers(): void {
     console.log('⏱️ Floating timer reached zero!')
     if (mainWindow) {
       mainWindow.webContents.send('timer-ended')
+    }
+  })
+
+  // Timer sync - floating timer sends time updates to be synced to database
+  ipcMain.on('timer-sync', (_event, data: { timeRemaining: number, totalSecondsUsed: number, sessionType: string }) => {
+    console.log('⏱️ Timer sync:', data)
+    currentSessionTime = data.timeRemaining
+    if (mainWindow) {
+      mainWindow.webContents.send('timer-sync', data)
     }
   })
 

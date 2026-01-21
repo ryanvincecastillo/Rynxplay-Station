@@ -56,7 +56,7 @@ interface Api {
   getLockStatus: () => Promise<boolean>
 
   // Floating timer
-  updateFloatingTimer: (time: number, sessionType: 'guest' | 'member') => Promise<boolean>
+  updateFloatingTimer: (time: number, sessionType: 'guest' | 'member', elapsed?: number) => Promise<boolean>
   showFloatingTimer: () => Promise<boolean>
   hideFloatingTimer: () => Promise<boolean>
 
@@ -79,6 +79,8 @@ interface Api {
   onTimerUpdate: (callback: (data: { time: number, sessionType: string }) => void) => void
   onTimerEnded: (callback: () => void) => void
   removeTimerEndedListener: () => void
+  onTimerSync: (callback: (data: { timeRemaining: number, totalSecondsUsed: number, sessionType: string }) => void) => void
+  removeTimerSyncListener: () => void
   stopFloatingTimer: () => void
 }
 

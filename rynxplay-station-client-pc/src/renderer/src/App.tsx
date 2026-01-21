@@ -57,6 +57,28 @@ function App() {
     }
   }, [endCurrentSession])
 
+  // Listen for timer-sync from floating timer to update store
+  useEffect(() => {
+    const handleTimerSync = (data: { timeRemaining: number, totalSecondsUsed: number, sessionType: string }) => {
+      const currentSession = useAppStore.getState().session
+      if (!currentSession) return
+
+      // Update store with the actual values from floating timer
+      useAppStore.setState({ 
+        timeRemaining: data.timeRemaining,
+        totalSecondsUsed: data.totalSecondsUsed
+      })
+      
+      console.log('⏱️ Store updated from floating timer:', data.timeRemaining, 'remaining,', data.totalSecondsUsed, 'used')
+    }
+
+    window.api?.onTimerSync?.(handleTimerSync)
+
+    return () => {
+      window.api?.removeTimerSyncListener?.()
+    }
+  }, [])
+
   // Show loading screen while initializing
   if (!isInitialized) {
     return <LoadingScreen />
