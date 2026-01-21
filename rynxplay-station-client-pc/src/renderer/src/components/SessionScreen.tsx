@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState } from 'react'
 import { useAppStore } from '../stores/appStore'
 
 export function SessionScreen() {
@@ -6,94 +6,80 @@ export function SessionScreen() {
   const member = useAppStore(s => s.member)
   const device = useAppStore(s => s.device)
   const storeTimeRemaining = useAppStore(s => s.timeRemaining)
-  const storeTotalUsed = useAppStore(s => s.totalSecondsUsed)
   const endCurrentSession = useAppStore(s => s.endCurrentSession)
 
-  const [minimized, setMinimized] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
+  const [showPanel, setShowPanel] = useState(true)
   
-  // Timer state
+  // Timer state - LOCAL to this component
   const [timeLeft, setTimeLeft] = useState(0)
   const [timeUsed, setTimeUsed] = useState(0)
-  const timerIdRef = useRef<number | null>(null)
-  const initializedRef = useRef(false)
+  const [timerStarted, setTimerStarted] = useState(false)
 
-  // Session info
   const isGuest = session?.session_type === 'guest'
-  const isActive = session?.status === 'active'
 
-  // Combined initialization and timer effect
+  // Initialize timer ONCE when component mounts or session changes
   useEffect(() => {
-    // Clear any existing timer
-    if (timerIdRef.current) {
-      window.clearInterval(timerIdRef.current)
-      timerIdRef.current = null
-    }
+    if (!session) return
 
-    // Don't do anything if no active session
-    if (!session || !isActive) {
-      initializedRef.current = false
-      return
-    }
+    // Get initial time from session or store
+    const initialTime = session.time_remaining_seconds || storeTimeRemaining || 0
+    const initialUsed = session.total_seconds_used || 0
 
-    // Get the best available time value
-    let initialTime = 0
-    if (session.time_remaining_seconds && session.time_remaining_seconds > 0) {
-      initialTime = session.time_remaining_seconds
-    } else if (storeTimeRemaining && storeTimeRemaining > 0) {
-      initialTime = storeTimeRemaining
-    }
+    console.log('🎮 Session loaded - initialTime:', initialTime)
     
-    const initialUsed = session.total_seconds_used || storeTotalUsed || 0
-
-    console.log('⏱️ Timer init:', initialTime, 'seconds')
-
-    // Set initial values
     setTimeLeft(initialTime)
     setTimeUsed(initialUsed)
-    initializedRef.current = true
+    setTimerStarted(true)
+  }, [session?.id])
 
-    // Don't start timer if guest session has no time
-    if (isGuest && initialTime <= 0) {
-      console.log('⚠️ No time for guest session')
-      return
-    }
+  // THE TIMER - runs when timerStarted is true
+  useEffect(() => {
+    if (!timerStarted || !session) return
 
-    console.log('✅ Timer started')
+    console.log('⏱️ Starting interval timer')
 
-    // Start the timer
-    timerIdRef.current = window.setInterval(() => {
+    const intervalId = setInterval(() => {
+      // Increment elapsed time
       setTimeUsed(prev => prev + 1)
 
+      // For guest sessions, decrement remaining time
       if (isGuest) {
         setTimeLeft(prev => {
-          const newVal = prev - 1
-          if (newVal <= 0) {
-            console.log('⏱️ Time up!')
+          const newTime = prev - 1
+          
+          // Update floating timer
+          if (window.api?.updateFloatingTimer) {
+            window.api.updateFloatingTimer(Math.max(0, newTime), 'guest')
+          }
+
+          // Time's up
+          if (newTime <= 0) {
+            console.log('⏱️ Time is up!')
             endCurrentSession()
             return 0
           }
-          return newVal
+
+          return newTime
+        })
+      } else {
+        // Member session - update floating timer with elapsed
+        setTimeUsed(prev => {
+          if (window.api?.updateFloatingTimer) {
+            window.api.updateFloatingTimer(prev, 'member')
+          }
+          return prev
         })
       }
     }, 1000)
 
     return () => {
-      if (timerIdRef.current) {
-        window.clearInterval(timerIdRef.current)
-        timerIdRef.current = null
-      }
+      console.log('⏱️ Clearing interval')
+      clearInterval(intervalId)
     }
-  }, [session?.id, isActive, isGuest, storeTimeRemaining, storeTotalUsed, endCurrentSession])
+  }, [timerStarted, session?.id, isGuest, endCurrentSession])
 
-  // Sync with floating timer
-  useEffect(() => {
-    if (window.api?.updateFloatingTimer) {
-      window.api.updateFloatingTimer(isGuest ? timeLeft : timeUsed, isGuest ? 'guest' : 'member')
-    }
-  }, [timeLeft, timeUsed, isGuest])
-
-  // Format time as HH:MM:SS
+  // Format time
   const formatTime = (secs: number) => {
     const s = Math.max(0, Math.floor(secs))
     const h = Math.floor(s / 3600)
@@ -102,8 +88,8 @@ export function SessionScreen() {
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
   }
 
-  // Get warning level
-  const getWarning = (): 'normal' | 'warning' | 'critical' => {
+  // Warning level
+  const getWarning = () => {
     if (isGuest) {
       if (timeLeft <= 60) return 'critical'
       if (timeLeft <= 300) return 'warning'
@@ -116,148 +102,236 @@ export function SessionScreen() {
 
   const warning = getWarning()
 
-  // Theme colors based on session type and warning
-  const getBg = () => {
-    if (warning === 'critical') return 'from-red-600 to-rose-700'
-    if (warning === 'warning') return 'from-amber-500 to-orange-600'
-    return isGuest ? 'from-blue-600 to-cyan-600' : 'from-emerald-600 to-teal-600'
-  }
-
-  // ===== MINIMIZED VIEW =====
-  if (minimized) {
+  // If panel is hidden, show minimal floating button
+  if (!showPanel) {
     return (
       <button
-        onClick={() => setMinimized(false)}
-        className={`fixed top-3 right-3 z-50 bg-gradient-to-r ${getBg()} px-4 py-2 rounded-xl shadow-lg flex items-center gap-2 hover:scale-105 transition-transform`}
+        onClick={() => setShowPanel(true)}
+        className={`fixed bottom-20 right-4 z-50 px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-3 transition-all hover:scale-105 ${
+          warning === 'critical' 
+            ? 'bg-gradient-to-r from-red-500 to-rose-600' 
+            : warning === 'warning'
+            ? 'bg-gradient-to-r from-amber-500 to-orange-500'
+            : isGuest 
+            ? 'bg-gradient-to-r from-blue-500 to-cyan-500' 
+            : 'bg-gradient-to-r from-emerald-500 to-teal-500'
+        }`}
       >
-        <span className={`w-2 h-2 rounded-full bg-white ${warning === 'critical' ? 'animate-ping' : ''}`} />
-        <span className="font-mono font-bold text-white">
+        <div className={`w-3 h-3 rounded-full bg-white ${warning === 'critical' ? 'animate-pulse' : ''}`} />
+        <span className="text-white font-mono font-bold text-xl">
           {isGuest ? formatTime(timeLeft) : `₱${(member?.credits || 0).toFixed(2)}`}
         </span>
-        <svg className="w-4 h-4 text-white/70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <svg className="w-5 h-5 text-white/80" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
         </svg>
       </button>
     )
   }
 
-  // ===== FULL VIEW - COMPACT =====
+  // Full panel view - positioned to not cover taskbar
   return (
     <>
-      <div className={`fixed top-3 right-3 z-50 w-64 rounded-2xl overflow-hidden shadow-2xl bg-gradient-to-br ${getBg()}`}>
-        {/* Header Row */}
-        <div className="p-3 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-white/20 rounded-lg flex items-center justify-center">
+      {/* Semi-transparent overlay - click to minimize */}
+      <div 
+        className="fixed inset-0 z-40"
+        style={{ bottom: '48px' }} // Leave space for taskbar
+        onClick={() => setShowPanel(false)}
+      />
+
+      {/* Main Session Panel */}
+      <div 
+        className="fixed inset-0 z-50 flex items-center justify-center p-8"
+        style={{ bottom: '48px' }} // Leave space for taskbar
+      >
+        <div className={`w-full max-w-lg rounded-3xl overflow-hidden shadow-2xl ${
+          warning === 'critical' 
+            ? 'bg-gradient-to-br from-red-900/95 to-rose-900/95 border border-red-500/50' 
+            : warning === 'warning'
+            ? 'bg-gradient-to-br from-amber-900/95 to-orange-900/95 border border-amber-500/50'
+            : 'bg-gradient-to-br from-slate-900/95 to-slate-800/95 border border-slate-700/50'
+        }`}>
+          
+          {/* Header */}
+          <div className={`p-6 ${
+            warning === 'critical' 
+              ? 'bg-red-500/20' 
+              : warning === 'warning'
+              ? 'bg-amber-500/20'
+              : isGuest ? 'bg-cyan-500/10' : 'bg-emerald-500/10'
+          }`}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className={`w-14 h-14 rounded-2xl flex items-center justify-center ${
+                  isGuest 
+                    ? 'bg-gradient-to-br from-cyan-500 to-blue-600' 
+                    : 'bg-gradient-to-br from-emerald-500 to-teal-600'
+                }`}>
+                  {isGuest ? (
+                    <svg className="w-7 h-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-7 h-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                    </svg>
+                  )}
+                </div>
+                <div>
+                  <h1 className="text-2xl font-bold text-white">{device?.name || 'PC Station'}</h1>
+                  <p className={`text-sm ${isGuest ? 'text-cyan-300' : 'text-emerald-300'}`}>
+                    {isGuest ? 'Guest Session' : `${member?.username || 'Member'}`}
+                  </p>
+                </div>
+              </div>
+              
+              {/* Minimize button */}
+              <button
+                onClick={() => setShowPanel(false)}
+                className="p-3 rounded-xl bg-white/10 hover:bg-white/20 transition"
+              >
+                <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Main Content */}
+          <div className="p-8">
+            {/* Big Timer / Credits Display */}
+            <div className="text-center mb-8">
               {isGuest ? (
-                <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
+                <>
+                  <p className="text-slate-400 text-sm uppercase tracking-widest mb-2">Time Remaining</p>
+                  <p className={`text-7xl font-bold font-mono tracking-tight ${
+                    warning === 'critical' 
+                      ? 'text-red-400 animate-pulse' 
+                      : warning === 'warning' 
+                      ? 'text-amber-400' 
+                      : 'text-white'
+                  }`}>
+                    {formatTime(timeLeft)}
+                  </p>
+                </>
               ) : (
-                <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                </svg>
+                <>
+                  <p className="text-slate-400 text-sm uppercase tracking-widest mb-2">Credits Balance</p>
+                  <p className={`text-7xl font-bold ${
+                    warning === 'critical' 
+                      ? 'text-red-400 animate-pulse' 
+                      : warning === 'warning' 
+                      ? 'text-amber-400' 
+                      : 'text-emerald-400'
+                  }`}>
+                    ₱{(member?.credits || 0).toFixed(2)}
+                  </p>
+                  {member?.full_name && (
+                    <p className="text-slate-400 mt-2">{member.full_name}</p>
+                  )}
+                </>
               )}
             </div>
-            <div>
-              <p className="text-white text-sm font-medium leading-none">{device?.name || 'Station'}</p>
-              <p className="text-white/60 text-xs">{isGuest ? 'Guest' : member?.username || 'Member'}</p>
+
+            {/* Stats Grid */}
+            <div className="grid grid-cols-2 gap-4 mb-8">
+              <div className="bg-slate-800/50 rounded-2xl p-5 text-center">
+                <p className="text-slate-500 text-xs uppercase tracking-wider mb-1">Session Time</p>
+                <p className="text-white text-2xl font-mono">{formatTime(timeUsed)}</p>
+              </div>
+              <div className="bg-slate-800/50 rounded-2xl p-5 text-center">
+                <p className="text-slate-500 text-xs uppercase tracking-wider mb-1">Rate</p>
+                <p className="text-white text-2xl">
+                  {session?.rates 
+                    ? `₱${session.rates.price_per_unit}/${session.rates.unit_minutes}min` 
+                    : '—'}
+                </p>
+              </div>
+            </div>
+
+            {/* Warning Banner */}
+            {warning !== 'normal' && (
+              <div className={`rounded-2xl p-4 mb-6 text-center ${
+                warning === 'critical' 
+                  ? 'bg-red-500/20 border border-red-500/50' 
+                  : 'bg-amber-500/20 border border-amber-500/50'
+              }`}>
+                <p className={`text-lg font-semibold ${
+                  warning === 'critical' ? 'text-red-400' : 'text-amber-400'
+                }`}>
+                  {isGuest
+                    ? warning === 'critical' 
+                      ? '⚠️ Less than 1 minute remaining!' 
+                      : '⏰ Less than 5 minutes remaining'
+                    : warning === 'critical' 
+                      ? '⚠️ Low credits! Please top up.' 
+                      : '💰 Credits running low'}
+                </p>
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="grid grid-cols-2 gap-4">
+              <button
+                onClick={() => setShowPanel(false)}
+                className="bg-slate-700 hover:bg-slate-600 text-white font-semibold py-4 rounded-2xl transition flex items-center justify-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+                Minimize
+              </button>
+              <button
+                onClick={() => setShowConfirm(true)}
+                className="bg-red-600 hover:bg-red-500 text-white font-semibold py-4 rounded-2xl transition flex items-center justify-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                </svg>
+                End Session
+              </button>
             </div>
           </div>
-          <button onClick={() => setMinimized(true)} className="p-1.5 bg-white/20 rounded-lg hover:bg-white/30">
-            <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 12H6" />
-            </svg>
-          </button>
-        </div>
 
-        {/* Main Display */}
-        <div className="px-3 pb-2 text-center">
-          {isGuest ? (
-            <>
-              <p className="text-white/60 text-[10px] uppercase tracking-wider">Time Remaining</p>
-              <p className={`text-4xl font-bold font-mono text-white ${warning === 'critical' ? 'animate-pulse' : ''}`}>
-                {formatTime(timeLeft)}
-              </p>
-            </>
-          ) : (
-            <>
-              <p className="text-white/60 text-[10px] uppercase tracking-wider">Credits</p>
-              <p className={`text-4xl font-bold text-white ${warning === 'critical' ? 'animate-pulse' : ''}`}>
-                ₱{(member?.credits || 0).toFixed(2)}
-              </p>
-            </>
-          )}
-        </div>
-
-        {/* Stats Row */}
-        <div className="px-3 pb-3">
-          <div className="flex gap-2">
-            <div className="flex-1 bg-black/20 rounded-lg p-2 text-center">
-              <p className="text-white/50 text-[9px] uppercase">Elapsed</p>
-              <p className="text-white text-xs font-mono">{formatTime(timeUsed)}</p>
-            </div>
-            <div className="flex-1 bg-black/20 rounded-lg p-2 text-center">
-              <p className="text-white/50 text-[9px] uppercase">Rate</p>
-              <p className="text-white text-xs">
-                {session?.rates ? `₱${session.rates.price_per_unit}/${session.rates.unit_minutes}m` : '—'}
-              </p>
-            </div>
+          {/* Footer */}
+          <div className="px-8 pb-6">
+            <p className="text-center text-slate-500 text-sm">
+              Click outside or press Minimize to continue using the PC
+            </p>
           </div>
-        </div>
-
-        {/* Warning */}
-        {warning !== 'normal' && (
-          <div className="px-3 pb-3">
-            <div className="bg-black/30 rounded-lg p-2 text-center">
-              <p className="text-white text-xs font-medium">
-                {isGuest
-                  ? (warning === 'critical' ? '⚠️ Less than 1 min!' : '⏰ Less than 5 min')
-                  : (warning === 'critical' ? '⚠️ Low credits!' : '💰 Running low')}
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* End Button */}
-        <div className="p-3 pt-0">
-          <button
-            onClick={() => setShowConfirm(true)}
-            className="w-full bg-black/30 hover:bg-black/40 text-white text-sm font-medium py-2.5 rounded-xl transition flex items-center justify-center gap-2"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-            </svg>
-            End Session
-          </button>
         </div>
       </div>
 
-      {/* Confirmation Modal */}
+      {/* End Session Confirmation Modal */}
       {showConfirm && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/70">
-          <div className="bg-gray-900 rounded-2xl p-5 w-72 shadow-2xl">
-            <div className="text-center mb-4">
-              <div className="w-12 h-12 bg-red-500/20 rounded-full mx-auto mb-3 flex items-center justify-center">
-                <svg className="w-6 h-6 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/80">
+          <div className="bg-slate-900 border border-slate-700 rounded-3xl p-8 w-full max-w-md shadow-2xl">
+            <div className="text-center mb-8">
+              <div className="w-20 h-20 bg-red-500/20 rounded-full mx-auto mb-6 flex items-center justify-center">
+                <svg className="w-10 h-10 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                 </svg>
               </div>
-              <h3 className="text-lg font-bold text-white">End Session?</h3>
-              <p className="text-gray-400 text-sm">PC will be locked.</p>
+              <h2 className="text-2xl font-bold text-white mb-3">End Session?</h2>
+              <p className="text-slate-400 text-lg">
+                The computer will be locked after ending your session.
+              </p>
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            
+            <div className="grid grid-cols-2 gap-4">
               <button
                 onClick={() => setShowConfirm(false)}
-                className="bg-gray-800 hover:bg-gray-700 text-white py-2.5 rounded-xl transition"
+                className="bg-slate-700 hover:bg-slate-600 text-white font-semibold py-4 rounded-2xl transition"
               >
                 Cancel
               </button>
               <button
-                onClick={() => { setShowConfirm(false); endCurrentSession() }}
-                className="bg-red-600 hover:bg-red-500 text-white py-2.5 rounded-xl transition"
+                onClick={() => {
+                  setShowConfirm(false)
+                  endCurrentSession()
+                }}
+                className="bg-red-600 hover:bg-red-500 text-white font-semibold py-4 rounded-2xl transition"
               >
-                End
+                End Session
               </button>
             </div>
           </div>
