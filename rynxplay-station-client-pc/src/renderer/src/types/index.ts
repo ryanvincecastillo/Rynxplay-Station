@@ -86,6 +86,7 @@ export interface Session {
   total_amount: number
   status: SessionStatus
   created_at: string
+  updated_at: string
   // Joined data
   members?: Member
   rates?: Rate

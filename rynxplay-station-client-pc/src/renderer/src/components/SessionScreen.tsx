@@ -9,7 +9,6 @@ export function SessionScreen() {
   const endCurrentSession = useAppStore(s => s.endCurrentSession)
 
   const [showConfirm, setShowConfirm] = useState(false)
-  const [showPanel, setShowPanel] = useState(true)
   
   // Timer state - LOCAL to this component
   const [timeLeft, setTimeLeft] = useState(0)
@@ -102,32 +101,6 @@ export function SessionScreen() {
 
   const warning = getWarning()
 
-  // If panel is hidden, show minimal floating button
-  // if (!showPanel) {
-  //   return (
-  //     <button
-  //       onClick={() => window.api?.showFloatingTimer?.()}
-  //       className={`fixed bottom-20 right-4 z-50 px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-3 transition-all hover:scale-105 ${
-  //         warning === 'critical' 
-  //           ? 'bg-gradient-to-r from-red-500 to-rose-600' 
-  //           : warning === 'warning'
-  //           ? 'bg-gradient-to-r from-amber-500 to-orange-500'
-  //           : isGuest 
-  //           ? 'bg-gradient-to-r from-blue-500 to-cyan-500' 
-  //           : 'bg-gradient-to-r from-emerald-500 to-teal-500'
-  //       }`}
-  //     >
-  //       <div className={`w-3 h-3 rounded-full bg-white ${warning === 'critical' ? 'animate-pulse' : ''}`} />
-  //       <span className="text-white font-mono font-bold text-xl">
-  //         {isGuest ? formatTime(timeLeft) : `₱${(member?.credits || 0).toFixed(2)}`}
-  //       </span>
-  //       <svg className="w-5 h-5 text-white/80" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-  //         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
-  //       </svg>
-  //     </button>
-  //   )
-  // }
-
   // Full panel view - positioned to not cover taskbar
   return (
     <>
@@ -135,7 +108,6 @@ export function SessionScreen() {
       <div 
         className="fixed inset-0 z-40"
         style={{ bottom: '48px' }} // Leave space for taskbar
-        onClick={() => setShowPanel(false)}
       />
 
       {/* Main Session Panel */}
