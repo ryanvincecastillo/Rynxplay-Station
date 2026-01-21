@@ -2,174 +2,95 @@ import { useEffect, useState, useRef } from 'react'
 import { useAppStore } from '../stores/appStore'
 
 export function SessionScreen() {
-  const { 
-    session, 
-    member, 
-    device,
-    endCurrentSession
-  } = useAppStore()
-  
-  const [isMinimized, setIsMinimized] = useState(false)
-  const [showEndConfirm, setShowEndConfirm] = useState(false)
-  
-  // LOCAL timer state - component manages its own countdown
-  const [timeRemaining, setTimeRemaining] = useState(0)
-  const [elapsedTime, setElapsedTime] = useState(0)
-  
-  // Ref to track if timer is running
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const isTimerRunning = useRef(false)
+  const session = useAppStore(s => s.session)
+  const member = useAppStore(s => s.member)
+  const device = useAppStore(s => s.device)
+  const endCurrentSession = useAppStore(s => s.endCurrentSession)
 
-  // Debug: Log session object on every render
-  console.log('🔍 SessionScreen RENDER - session:', JSON.stringify(session, null, 2))
+  const [minimized, setMinimized] = useState(false)
+  const [showConfirm, setShowConfirm] = useState(false)
+  
+  // Timer state
+  const [timeLeft, setTimeLeft] = useState(0)
+  const [timeUsed, setTimeUsed] = useState(0)
+  const timerIdRef = useRef<number | null>(null)
 
-  // Initialize timer when session loads or changes
+  // Session info
+  const isGuest = session?.session_type === 'guest'
+  const isActive = session?.status === 'active'
+
+  // Initialize timer when session loads
   useEffect(() => {
-    console.log('📋 Session useEffect triggered')
-    console.log('📋 session?.id:', session?.id)
-    console.log('📋 session?.status:', session?.status)
-    console.log('📋 session?.session_type:', session?.session_type)
-    console.log('📋 session?.time_remaining_seconds:', session?.time_remaining_seconds)
-    
     if (session) {
-      const initialTime = session.time_remaining_seconds || 0
-      const initialElapsed = session.total_seconds_used || 0
-      
-      console.log('📋 Setting initial timer values:', {
-        timeRemaining: initialTime,
-        elapsed: initialElapsed
-      })
-      
-      setTimeRemaining(initialTime)
-      setElapsedTime(initialElapsed)
+      setTimeLeft(session.time_remaining_seconds || 0)
+      setTimeUsed(session.total_seconds_used || 0)
+      console.log('📋 Timer initialized:', session.time_remaining_seconds, 'seconds')
     }
   }, [session?.id])
 
-  // THE TIMER
+  // Main timer loop
   useEffect(() => {
-    console.log('⏱️ Timer useEffect triggered')
-    console.log('⏱️ session exists:', !!session)
-    console.log('⏱️ session?.status:', session?.status)
-    console.log('⏱️ isTimerRunning:', isTimerRunning.current)
-    
-    // Clear existing timer
-    if (timerRef.current) {
-      console.log('⏱️ Clearing existing timer')
-      clearInterval(timerRef.current)
-      timerRef.current = null
-      isTimerRunning.current = false
+    // Clear any existing timer
+    if (timerIdRef.current) {
+      window.clearInterval(timerIdRef.current)
+      timerIdRef.current = null
     }
 
-    // Check if we should start timer
-    if (!session) {
-      console.log('❌ Timer NOT started - session is null/undefined')
-      return
-    }
-    
-    if (session.status !== 'active') {
-      console.log('❌ Timer NOT started - session.status is:', session.status, '(expected: active)')
+    // Only run if session is active
+    if (!isActive) {
+      console.log('⏱️ Timer not running - session not active')
       return
     }
 
-    console.log('✅ Starting timer for', session.session_type, 'session')
-    isTimerRunning.current = true
+    console.log('⏱️ Timer STARTED')
 
-    timerRef.current = setInterval(() => {
-      if (!isTimerRunning.current) {
-        console.log('⏱️ Timer tick but isTimerRunning is false, skipping')
-        return
-      }
-      
-      // Increment elapsed time
-      setElapsedTime(prev => {
-        const newElapsed = prev + 1
-        
-        // Log every 5 seconds
-        if (newElapsed % 5 === 0) {
-          console.log(`⏱️ TICK - Elapsed: ${newElapsed}s`)
-        }
-        
-        // Sync to store every 10 seconds
-        if (newElapsed % 10 === 0) {
-          useAppStore.setState({ totalSecondsUsed: newElapsed })
-        }
-        
-        return newElapsed
-      })
+    timerIdRef.current = window.setInterval(() => {
+      // Always increment time used
+      setTimeUsed(prev => prev + 1)
 
-      // For GUEST sessions: countdown
-      if (session.session_type === 'guest') {
-        setTimeRemaining(prev => {
-          const newTime = prev - 1
-          
-          // Log every 5 seconds
-          if (Math.abs(newTime) % 5 === 0) {
-            console.log(`⏱️ TICK - Time remaining: ${newTime}s`)
-          }
-          
-          // Update floating timer
-          if (window.api?.updateFloatingTimer) {
-            window.api.updateFloatingTimer(Math.max(0, newTime), 'guest')
-          }
-          
-          // Sync to store every 10 seconds
-          if (newTime % 10 === 0 && newTime > 0) {
-            useAppStore.setState({ timeRemaining: newTime })
-          }
-          
-          // Session ended
-          if (newTime <= 0) {
-            console.log('⏱️ TIME IS UP! Ending session...')
-            isTimerRunning.current = false
+      // For guest sessions, decrement time left
+      if (isGuest) {
+        setTimeLeft(prev => {
+          if (prev <= 1) {
+            console.log('⏱️ TIME UP!')
             endCurrentSession()
             return 0
           }
-          
-          return newTime
+          return prev - 1
         })
-      } else {
-        // For MEMBER sessions: update floating timer with elapsed
-        if (window.api?.updateFloatingTimer) {
-          setElapsedTime(prev => {
-            window.api.updateFloatingTimer(prev, 'member')
-            return prev
-          })
-        }
       }
     }, 1000)
 
-    // Cleanup
     return () => {
-      console.log('⏱️ Timer cleanup')
-      if (timerRef.current) {
-        clearInterval(timerRef.current)
-        timerRef.current = null
+      if (timerIdRef.current) {
+        console.log('⏱️ Timer STOPPED')
+        window.clearInterval(timerIdRef.current)
+        timerIdRef.current = null
       }
-      isTimerRunning.current = false
     }
-  }, [session?.id, session?.status, session?.session_type, endCurrentSession])
+  }, [isActive, isGuest, endCurrentSession])
+
+  // Sync with floating timer
+  useEffect(() => {
+    if (window.api?.updateFloatingTimer) {
+      window.api.updateFloatingTimer(isGuest ? timeLeft : timeUsed, isGuest ? 'guest' : 'member')
+    }
+  }, [timeLeft, timeUsed, isGuest])
 
   // Format time as HH:MM:SS
-  const formatTime = (seconds: number): string => {
-    const s = Math.max(0, Math.floor(seconds))
-    const hours = Math.floor(s / 3600)
-    const minutes = Math.floor((s % 3600) / 60)
-    const secs = s % 60
-    
-    return [hours, minutes, secs]
-      .map(v => v.toString().padStart(2, '0'))
-      .join(':')
+  const formatTime = (secs: number) => {
+    const s = Math.max(0, Math.floor(secs))
+    const h = Math.floor(s / 3600)
+    const m = Math.floor((s % 3600) / 60)
+    const sec = s % 60
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
   }
 
-  const formatCredits = (credits: number): string => {
-    return `₱${credits.toFixed(2)}`
-  }
-
-  // Warning levels
-  const getWarningLevel = (): 'normal' | 'warning' | 'critical' => {
-    if (session?.session_type === 'guest') {
-      if (timeRemaining <= 60) return 'critical'
-      if (timeRemaining <= 300) return 'warning'
+  // Get warning level
+  const getWarning = (): 'normal' | 'warning' | 'critical' => {
+    if (isGuest) {
+      if (timeLeft <= 60) return 'critical'
+      if (timeLeft <= 300) return 'warning'
     } else if (member) {
       if (member.credits <= 5) return 'critical'
       if (member.credits <= 20) return 'warning'
@@ -177,232 +98,177 @@ export function SessionScreen() {
     return 'normal'
   }
 
-  const handleEndSession = async () => {
-    setShowEndConfirm(false)
-    await endCurrentSession()
+  const warning = getWarning()
+
+  // Theme colors
+  const theme = {
+    critical: { gradient: 'from-red-500 to-rose-600', text: 'text-white', muted: 'text-red-100' },
+    warning: { gradient: 'from-amber-500 to-orange-600', text: 'text-white', muted: 'text-amber-100' },
+    normal: isGuest 
+      ? { gradient: 'from-blue-500 to-cyan-600', text: 'text-white', muted: 'text-blue-100' }
+      : { gradient: 'from-emerald-500 to-teal-600', text: 'text-white', muted: 'text-emerald-100' }
   }
+  
+  const t = theme[warning]
 
-  const warningLevel = getWarningLevel()
-  const isGuest = session?.session_type === 'guest'
-
-  // ========== MINIMIZED VIEW ==========
-  if (isMinimized) {
+  // ===== MINIMIZED VIEW =====
+  if (minimized) {
     return (
-      <div
-        onClick={() => setIsMinimized(false)}
-        className="fixed top-4 right-4 z-50 cursor-pointer"
+      <button
+        onClick={() => setMinimized(false)}
+        className={`fixed top-4 right-4 z-50 bg-gradient-to-r ${t.gradient} px-4 py-2.5 rounded-2xl shadow-xl flex items-center gap-3 hover:scale-105 active:scale-95 transition-transform`}
       >
-        <div className={`glass rounded-xl px-3 py-2 flex items-center gap-2 hover:scale-105 transition-transform ${
-          warningLevel === 'critical' ? 'border-red-500/50 bg-red-500/10' :
-          warningLevel === 'warning' ? 'border-amber-500/50 bg-amber-500/10' : ''
-        }`}>
-          <div className={`w-2.5 h-2.5 rounded-full ${
-            warningLevel === 'critical' ? 'bg-red-500 animate-pulse' :
-            warningLevel === 'warning' ? 'bg-amber-500' : 'bg-emerald-500'
-          }`} />
-          
-          {isGuest ? (
-            <span className={`font-mono text-base font-bold ${
-              warningLevel === 'critical' ? 'text-red-400' :
-              warningLevel === 'warning' ? 'text-amber-400' : 'text-white'
-            }`}>
-              {formatTime(timeRemaining)}
-            </span>
-          ) : (
-            <span className={`font-semibold ${
-              warningLevel === 'critical' ? 'text-red-400' :
-              warningLevel === 'warning' ? 'text-amber-400' : 'text-emerald-400'
-            }`}>
-              {formatCredits(member?.credits || 0)}
-            </span>
-          )}
-          
-          <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
-          </svg>
-        </div>
-      </div>
+        <span className={`w-2 h-2 rounded-full bg-white ${warning === 'critical' ? 'animate-ping' : ''}`} />
+        <span className={`font-mono font-bold text-lg ${t.text}`}>
+          {isGuest ? formatTime(timeLeft) : `₱${(member?.credits || 0).toFixed(2)}`}
+        </span>
+        <svg className={`w-4 h-4 ${t.muted}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+        </svg>
+      </button>
     )
   }
 
-  // ========== FULL PANEL VIEW ==========
+  // ===== FULL VIEW =====
   return (
     <>
-      <div className="fixed top-4 right-4 z-50">
-        <div className={`glass rounded-2xl p-4 w-[280px] ${
-          warningLevel === 'critical' ? 'border-red-500/50' :
-          warningLevel === 'warning' ? 'border-amber-500/50' : ''
-        }`}>
-          
+      <div className="fixed top-4 right-4 z-50 w-72">
+        {/* Main Card */}
+        <div className="rounded-3xl overflow-hidden shadow-2xl">
           {/* Header */}
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                isGuest 
-                  ? 'bg-gradient-to-br from-cyan-500 to-blue-600' 
-                  : 'bg-gradient-to-br from-emerald-500 to-teal-600'
-              }`}>
-                {isGuest ? (
-                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                ) : (
-                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                  </svg>
-                )}
+          <div className={`bg-gradient-to-br ${t.gradient} p-5`}>
+            {/* Top Row */}
+            <div className="flex justify-between items-start mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 bg-white/20 backdrop-blur rounded-2xl flex items-center justify-center">
+                  {isGuest ? (
+                    <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                    </svg>
+                  )}
+                </div>
+                <div>
+                  <p className={`font-semibold ${t.text}`}>{device?.name || 'Station'}</p>
+                  <p className={`text-xs ${t.muted}`}>
+                    {isGuest ? 'Guest Session' : member?.username || 'Member'}
+                  </p>
+                </div>
               </div>
-              <div>
-                <p className="text-white text-sm font-medium leading-tight">{device?.name || 'PC'}</p>
-                <p className="text-slate-400 text-xs">
-                  {isGuest ? 'Guest' : member?.username || 'Member'}
+              <button
+                onClick={() => setMinimized(true)}
+                className="w-8 h-8 bg-white/20 backdrop-blur rounded-xl flex items-center justify-center hover:bg-white/30 transition"
+              >
+                <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 12H6" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Big Timer / Credits Display */}
+            <div className="text-center py-2">
+              {isGuest ? (
+                <>
+                  <p className={`text-xs uppercase tracking-widest ${t.muted} mb-1`}>Time Remaining</p>
+                  <p className={`text-5xl font-bold font-mono tracking-tight ${t.text} ${warning === 'critical' ? 'animate-pulse' : ''}`}>
+                    {formatTime(timeLeft)}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className={`text-xs uppercase tracking-widest ${t.muted} mb-1`}>Credits</p>
+                  <p className={`text-5xl font-bold ${t.text} ${warning === 'critical' ? 'animate-pulse' : ''}`}>
+                    ₱{(member?.credits || 0).toFixed(2)}
+                  </p>
+                  {member?.full_name && (
+                    <p className={`text-sm ${t.muted} mt-1`}>{member.full_name}</p>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Stats & Actions */}
+          <div className="bg-gray-900 p-4">
+            {/* Stats Grid */}
+            <div className="grid grid-cols-2 gap-2 mb-4">
+              <div className="bg-gray-800/80 rounded-2xl p-3 text-center">
+                <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">
+                  {isGuest ? 'Elapsed' : 'Session'}
+                </p>
+                <p className="text-white font-mono text-sm">{formatTime(timeUsed)}</p>
+              </div>
+              <div className="bg-gray-800/80 rounded-2xl p-3 text-center">
+                <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Rate</p>
+                <p className="text-white text-sm">
+                  {session?.rates 
+                    ? `₱${session.rates.price_per_unit}/${session.rates.unit_minutes}m` 
+                    : '—'}
                 </p>
               </div>
             </div>
-            
+
+            {/* Warning Banner */}
+            {warning !== 'normal' && (
+              <div className={`mb-4 p-3 rounded-2xl text-center ${
+                warning === 'critical' 
+                  ? 'bg-red-500/20 border border-red-500/40' 
+                  : 'bg-amber-500/20 border border-amber-500/40'
+              }`}>
+                <p className={`text-sm font-medium ${warning === 'critical' ? 'text-red-400' : 'text-amber-400'}`}>
+                  {isGuest
+                    ? warning === 'critical' ? '⚠️ Session ending soon!' : '⏰ Less than 5 min left'
+                    : warning === 'critical' ? '⚠️ Low credits!' : '💰 Credits running low'}
+                </p>
+              </div>
+            )}
+
+            {/* End Session Button */}
             <button
-              onClick={() => setIsMinimized(true)}
-              className="p-1.5 hover:bg-white/10 rounded-lg transition-colors"
-              title="Minimize"
+              onClick={() => setShowConfirm(true)}
+              className="w-full bg-gray-800 hover:bg-gray-700 active:bg-gray-600 text-white font-medium py-3.5 rounded-2xl transition-colors flex items-center justify-center gap-2"
             >
-              <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H4" />
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
               </svg>
+              End Session
             </button>
           </div>
-
-          {/* ========== GUEST SESSION ========== */}
-          {isGuest && (
-            <>
-              <div className={`text-center py-4 rounded-xl mb-3 ${
-                warningLevel === 'critical' ? 'bg-red-500/10 border border-red-500/30' :
-                warningLevel === 'warning' ? 'bg-amber-500/10 border border-amber-500/30' : 
-                'bg-slate-800/50'
-              }`}>
-                <p className="text-slate-400 text-[10px] uppercase tracking-wider mb-1">Time Remaining</p>
-                <p className={`text-4xl font-bold font-mono tracking-wide ${
-                  warningLevel === 'critical' ? 'text-red-400 animate-pulse' :
-                  warningLevel === 'warning' ? 'text-amber-400' : 'text-white'
-                }`}>
-                  {formatTime(timeRemaining)}
-                </p>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 mb-3">
-                <div className="bg-slate-800/30 rounded-lg p-2 text-center">
-                  <p className="text-slate-500 text-[10px] uppercase">Elapsed</p>
-                  <p className="text-white text-sm font-mono">{formatTime(elapsedTime)}</p>
-                </div>
-                <div className="bg-slate-800/30 rounded-lg p-2 text-center">
-                  <p className="text-slate-500 text-[10px] uppercase">Rate</p>
-                  <p className="text-white text-sm">
-                    {session?.rates ? `₱${session.rates.price_per_unit}/${session.rates.unit_minutes}m` : '-'}
-                  </p>
-                </div>
-              </div>
-
-              {warningLevel !== 'normal' && (
-                <div className={`rounded-lg p-2 mb-3 text-center ${
-                  warningLevel === 'critical' ? 'bg-red-500/20' : 'bg-amber-500/20'
-                }`}>
-                  <p className={`text-xs font-medium ${
-                    warningLevel === 'critical' ? 'text-red-400' : 'text-amber-400'
-                  }`}>
-                    {warningLevel === 'critical' ? '⚠️ Session ending soon!' : '⏰ Less than 5 minutes left'}
-                  </p>
-                </div>
-              )}
-            </>
-          )}
-
-          {/* ========== MEMBER SESSION ========== */}
-          {!isGuest && (
-            <>
-              <div className={`text-center py-4 rounded-xl mb-3 ${
-                warningLevel === 'critical' ? 'bg-red-500/10 border border-red-500/30' :
-                warningLevel === 'warning' ? 'bg-amber-500/10 border border-amber-500/30' : 
-                'bg-slate-800/50'
-              }`}>
-                <p className="text-slate-400 text-[10px] uppercase tracking-wider mb-1">Credits Balance</p>
-                <p className={`text-4xl font-bold ${
-                  warningLevel === 'critical' ? 'text-red-400 animate-pulse' :
-                  warningLevel === 'warning' ? 'text-amber-400' : 'text-emerald-400'
-                }`}>
-                  {formatCredits(member?.credits || 0)}
-                </p>
-                {member?.full_name && (
-                  <p className="text-slate-400 text-xs mt-1">{member.full_name}</p>
-                )}
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 mb-3">
-                <div className="bg-slate-800/30 rounded-lg p-2 text-center">
-                  <p className="text-slate-500 text-[10px] uppercase">Session Time</p>
-                  <p className="text-white text-sm font-mono">{formatTime(elapsedTime)}</p>
-                </div>
-                <div className="bg-slate-800/30 rounded-lg p-2 text-center">
-                  <p className="text-slate-500 text-[10px] uppercase">Rate</p>
-                  <p className="text-white text-sm">
-                    {session?.rates ? `₱${session.rates.price_per_unit}/${session.rates.unit_minutes}m` : '-'}
-                  </p>
-                </div>
-              </div>
-
-              {warningLevel !== 'normal' && (
-                <div className={`rounded-lg p-2 mb-3 text-center ${
-                  warningLevel === 'critical' ? 'bg-red-500/20' : 'bg-amber-500/20'
-                }`}>
-                  <p className={`text-xs font-medium ${
-                    warningLevel === 'critical' ? 'text-red-400' : 'text-amber-400'
-                  }`}>
-                    {warningLevel === 'critical' ? '⚠️ Low credits! Please top up.' : '💰 Credits running low'}
-                  </p>
-                </div>
-              )}
-            </>
-          )}
-
-          {/* End Session Button */}
-          <button
-            onClick={() => setShowEndConfirm(true)}
-            className="w-full bg-slate-700/50 hover:bg-slate-600/50 text-white text-sm font-medium py-2.5 rounded-xl transition-colors flex items-center justify-center gap-2"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-            </svg>
-            End Session
-          </button>
         </div>
       </div>
 
-      {/* End Session Confirmation Modal */}
-      {showEndConfirm && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
-          <div className="glass rounded-2xl p-5 w-72 mx-4">
-            <div className="text-center mb-4">
-              <div className="w-12 h-12 rounded-full bg-amber-500/20 mx-auto mb-3 flex items-center justify-center">
-                <svg className="w-6 h-6 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+      {/* Confirmation Modal */}
+      {showConfirm && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+          <div className="bg-gray-900 border border-gray-800 rounded-3xl p-6 w-full max-w-sm shadow-2xl">
+            <div className="text-center mb-6">
+              <div className="w-16 h-16 bg-red-500/20 rounded-full mx-auto mb-4 flex items-center justify-center">
+                <svg className="w-8 h-8 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                 </svg>
               </div>
-              <h3 className="text-lg font-bold text-white mb-1">End Session?</h3>
-              <p className="text-slate-400 text-sm">
-                This will lock the computer.
-              </p>
+              <h2 className="text-xl font-bold text-white mb-2">End Session?</h2>
+              <p className="text-gray-400">The computer will be locked.</p>
             </div>
             
-            <div className="flex gap-2">
+            <div className="grid grid-cols-2 gap-3">
               <button
-                onClick={() => setShowEndConfirm(false)}
-                className="flex-1 bg-slate-700/50 hover:bg-slate-600/50 text-white font-medium py-2.5 rounded-xl transition-colors"
+                onClick={() => setShowConfirm(false)}
+                className="bg-gray-800 hover:bg-gray-700 text-white font-medium py-3.5 rounded-2xl transition-colors"
               >
                 Cancel
               </button>
               <button
-                onClick={handleEndSession}
-                className="flex-1 bg-red-500 hover:bg-red-600 text-white font-medium py-2.5 rounded-xl transition-colors"
+                onClick={() => {
+                  setShowConfirm(false)
+                  endCurrentSession()
+                }}
+                className="bg-red-600 hover:bg-red-500 text-white font-medium py-3.5 rounded-2xl transition-colors"
               >
-                End
+                End Session
               </button>
             </div>
           </div>
